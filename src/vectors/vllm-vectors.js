@@ -15,7 +15,7 @@ export async function getVllmBatchVector(texts, apiUrl, model, directories) {
     url.pathname = '/v1/embeddings';
 
     const headers = {};
-    setAdditionalHeadersByType(headers, TEXTGEN_TYPES.VLLM, apiUrl, directories);
+    await setAdditionalHeadersByType(headers, TEXTGEN_TYPES.VLLM, apiUrl, directories);
 
     const response = await fetch(url, {
         method: 'POST',

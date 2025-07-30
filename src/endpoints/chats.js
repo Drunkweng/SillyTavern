@@ -1,11 +1,13 @@
 import fs from 'node:fs';
+import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import process from 'node:process';
 
 import express from 'express';
+// @ts-ignore
 import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import writeFileAtomic from 'write-file-atomic';
 import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
@@ -16,6 +18,7 @@ import {
     generateTimestamp,
     removeOldBackups,
     formatBytes,
+    asyncHandler,
 } from '../util.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -31,7 +34,7 @@ export const CHAT_BACKUPS_PREFIX = 'chat_';
  * @param {string} name The name of the chat.
  * @param {string} chat The serialized chat to save.
  */
-function backupChat(directory, name, chat) {
+async function backupChat(directory, name, chat) {
     try {
         if (!isBackupEnabled || !fs.existsSync(directory)) {
             return;
@@ -41,22 +44,22 @@ function backupChat(directory, name, chat) {
         name = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
         const backupFile = path.join(directory, `${CHAT_BACKUPS_PREFIX}${name}_${generateTimestamp()}.jsonl`);
-        writeFileAtomicSync(backupFile, chat, 'utf-8');
+        await writeFileAtomic(backupFile, chat, 'utf-8');
 
-        removeOldBackups(directory, `${CHAT_BACKUPS_PREFIX}${name}_`);
+        await removeOldBackups(directory, `${CHAT_BACKUPS_PREFIX}${name}_`);
 
         if (isNaN(maxTotalChatBackups) || maxTotalChatBackups < 0) {
             return;
         }
 
-        removeOldBackups(directory, CHAT_BACKUPS_PREFIX, maxTotalChatBackups);
+        await removeOldBackups(directory, CHAT_BACKUPS_PREFIX, maxTotalChatBackups);
     } catch (err) {
         console.error(`Could not backup chat for ${name}`, err);
     }
 }
 
 /**
- * @type {Map<string, import('lodash').DebouncedFunc<function(string, string, string): void>>}
+ * @type {Map<string, import('lodash').DebouncedFunc<function(string, string, string): Promise<void>>>}
  */
 const backupFunctions = new Map();
 
@@ -334,7 +337,9 @@ function readFirstLine(filePath) {
  */
 async function checkChatIntegrity(filePath, integritySlug) {
     // If the chat file doesn't exist, assume it's intact
-    if (!fs.existsSync(filePath)) {
+    try {
+        await fsPromises.access(filePath);
+    } catch {
         return true;
     }
 
@@ -369,7 +374,7 @@ async function checkChatIntegrity(filePath, integritySlug) {
  */
 export async function getChatInfo(pathToFile, additionalData = {}, isGroup = false) {
     return new Promise(async (res) => {
-        const stats = await fs.promises.stat(pathToFile);
+        const stats = await fsPromises.stat(pathToFile);
         const fileSizeInKB = `${(stats.size / 1024).toFixed(2)}kb`;
 
         const chatData = {
@@ -426,7 +431,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, isGroup = fal
 
 export const router = express.Router();
 
-router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
+router.post('/save', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     try {
         const directoryName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
@@ -441,24 +446,26 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
                 return response.status(400).send({ error: 'integrity' });
             }
         }
-        writeFileAtomicSync(filePath, jsonlData, 'utf8');
+        await writeFileAtomic(filePath, jsonlData, 'utf8');
         getBackupFunction(request.user.profile.handle)(request.user.directories.backups, directoryName, jsonlData);
-        return response.send({ result: 'ok' });
+        response.send({ result: 'ok' });
     } catch (error) {
         console.error(error);
-        return response.send(error);
+        response.send(error);
     }
-});
+}));
 
-router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/get', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     try {
         const dirName = String(request.body.avatar_url).replace('.png', '');
         const directoryPath = path.join(request.user.directories.chats, dirName);
-        const chatDirExists = fs.existsSync(directoryPath);
 
-        //if no chat dir for the character is found, make one with the character name
-        if (!chatDirExists) {
-            fs.mkdirSync(directoryPath);
+        // Check if chat directory exists, create if it doesn't
+        try {
+            await fsPromises.access(directoryPath);
+        } catch {
+            //if no chat dir for the character is found, make one with the character name
+            await fsPromises.mkdir(directoryPath);
             return response.send({});
         }
 
@@ -468,13 +475,15 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
 
         const fileName = `${String(request.body.file_name)}.jsonl`;
         const filePath = path.join(directoryPath, sanitize(fileName));
-        const chatFileExists = fs.existsSync(filePath);
 
-        if (!chatFileExists) {
+        // Check if chat file exists
+        try {
+            await fsPromises.access(filePath);
+        } catch {
             return response.send({});
         }
 
-        const data = fs.readFileSync(filePath, 'utf8');
+        const data = await fsPromises.readFile(filePath, 'utf8');
         const lines = data.split('\n');
 
         // Iterate through the array of strings and parse each line as JSON
@@ -482,14 +491,17 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
         return response.send(jsonData);
     } catch (error) {
         console.error(error);
-        return response.send({});
+        // Only send response if headers haven't been sent yet
+        if (!response.headersSent) {
+            return response.send({});
+        }
     }
-});
+}));
 
-router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
+router.post('/rename', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     try {
         if (!request.body || !request.body.original_file || !request.body.renamed_file) {
-            return response.sendStatus(400);
+            response.sendStatus(400);
         }
 
         const pathToFolder = request.body.is_group
@@ -501,72 +513,87 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         console.debug('Old chat name', pathToOriginalFile);
         console.debug('New chat name', pathToRenamedFile);
 
-        if (!fs.existsSync(pathToOriginalFile) || fs.existsSync(pathToRenamedFile)) {
+        try {
+            await fsPromises.access(pathToOriginalFile);
+        } catch {
             console.error('Either Source or Destination files are not available');
             return response.status(400).send({ error: true });
         }
+        try {
+            await fsPromises.access(pathToRenamedFile);
+            console.error('Either Source or Destination files are not available');
+            return response.status(400).send({ error: true });
+        } catch {
+            // new file does not exist, this is good
+        }
 
-        fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
-        fs.unlinkSync(pathToOriginalFile);
+        await fsPromises.copyFile(pathToOriginalFile, pathToRenamedFile);
+        await fsPromises.unlink(pathToOriginalFile);
         console.info('Successfully renamed chat file.');
-        return response.send({ ok: true, sanitizedFileName });
+        response.send({ ok: true, sanitizedFileName });
     } catch (error) {
         console.error('Error renaming chat file:', error);
-        return response.status(500).send({ error: true });
+        response.status(500).send({ error: true });
     }
-});
+}));
 
-router.post('/delete', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/delete', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     const dirName = String(request.body.avatar_url).replace('.png', '');
     const fileName = String(request.body.chatfile);
     const filePath = path.join(request.user.directories.chats, dirName, sanitize(fileName));
-    const chatFileExists = fs.existsSync(filePath);
 
-    if (!chatFileExists) {
+    try {
+        await fsPromises.access(filePath);
+    } catch {
         console.error(`Chat file not found '${filePath}'`);
-        return response.sendStatus(400);
+        response.sendStatus(400);
     }
 
-    fs.unlinkSync(filePath);
+    await fsPromises.unlink(filePath);
     console.info(`Deleted chat file: ${filePath}`);
-    return response.send('ok');
-});
+    response.send('ok');
+}));
 
-router.post('/export', validateAvatarUrlMiddleware, async function (request, response) {
+router.post('/export', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     if (!request.body.file || (!request.body.avatar_url && request.body.is_group === false)) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
     }
     const pathToFolder = request.body.is_group
         ? request.user.directories.groupChats
         : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
     let filename = path.join(pathToFolder, request.body.file);
     let exportfilename = request.body.exportfilename;
-    if (!fs.existsSync(filename)) {
+    try {
+        await fsPromises.access(filename);
+    } catch {
         const errorMessage = {
             message: `Could not find JSONL file to export. Source chat file: ${filename}.`,
         };
         console.error(errorMessage.message);
-        return response.status(404).json(errorMessage);
+        response.status(404).json(errorMessage);
+        return;
     }
     try {
         // Short path for JSONL files
         if (request.body.format === 'jsonl') {
             try {
-                const rawFile = fs.readFileSync(filename, 'utf8');
+                const rawFile = await fsPromises.readFile(filename, 'utf8');
                 const successMessage = {
                     message: `Chat saved to ${exportfilename}`,
                     result: rawFile,
                 };
 
                 console.info(`Chat exported as ${exportfilename}`);
-                return response.status(200).json(successMessage);
+                response.status(200).json(successMessage);
+                return;
             } catch (err) {
                 console.error(err);
                 const errorMessage = {
                     message: `Could not read JSONL file to export. Source chat file: ${filename}.`,
                 };
                 console.error(errorMessage.message);
-                return response.status(500).json(errorMessage);
+                response.status(500).json(errorMessage);
+                return;
             }
         }
 
@@ -593,36 +620,40 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 result: buffer,
             };
             console.info(`Chat exported as ${exportfilename}`);
-            return response.status(200).json(successMessage);
+            response.status(200).json(successMessage);
         });
     } catch (err) {
         console.error('chat export failed.', err);
-        return response.sendStatus(400);
+        response.sendStatus(400);
     }
-});
+}));
 
-router.post('/group/import', function (request, response) {
+router.post('/group/import', asyncHandler(async function (request, response) {
     try {
         const filedata = request.file;
 
         if (!filedata) {
-            return response.sendStatus(400);
+            response.sendStatus(400);
+            return;
         }
 
         const chatname = humanizedISO8601DateTime();
         const pathToUpload = path.join(filedata.destination, filedata.filename);
         const pathToNewFile = path.join(request.user.directories.groupChats, `${chatname}.jsonl`);
-        fs.copyFileSync(pathToUpload, pathToNewFile);
-        fs.unlinkSync(pathToUpload);
-        return response.send({ res: chatname });
+        await fsPromises.copyFile(pathToUpload, pathToNewFile);
+        await fsPromises.unlink(pathToUpload);
+        response.send({ res: chatname });
     } catch (error) {
         console.error(error);
-        return response.send({ error: true });
+        response.send({ error: true });
     }
-});
+}));
 
-router.post('/import', validateAvatarUrlMiddleware, function (request, response) {
-    if (!request.body) return response.sendStatus(400);
+router.post('/import', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
+    if (!request.body) {
+        response.sendStatus(400);
+        return;
+    }
 
     const format = request.body.file_type;
     const avatarUrl = (request.body.avatar_url).replace('.png', '');
@@ -630,15 +661,16 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
     const userName = request.body.user_name || 'User';
 
     if (!request.file) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     try {
         const pathToUpload = path.join(request.file.destination, request.file.filename);
-        const data = fs.readFileSync(pathToUpload, 'utf8');
+        const data = await fsPromises.readFile(pathToUpload, 'utf8');
 
         if (format === 'json') {
-            fs.unlinkSync(pathToUpload);
+            await fsPromises.unlink(pathToUpload);
             const jsonData = JSON.parse(data);
 
             /** @type {function(string, string, object): string|string[]} */
@@ -656,24 +688,28 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
                 importFunc = importRisuChat;
             } else { // Unknown format
                 console.error('Incorrect chat format .json');
-                return response.send({ error: true });
+                response.send({ error: true });
+                return;
             }
 
-            const handleChat = (chat) => {
+            const handleChat = async (chat) => {
                 const fileName = `${characterName} - ${humanizedISO8601DateTime()} imported.jsonl`;
                 const filePath = path.join(request.user.directories.chats, avatarUrl, fileName);
-                writeFileAtomicSync(filePath, chat, 'utf8');
+                await writeFileAtomic(filePath, chat, 'utf8');
             };
 
             const chat = importFunc(userName, characterName, jsonData);
 
             if (Array.isArray(chat)) {
-                chat.forEach(handleChat);
+                for (const c of chat) {
+                    await handleChat(c);
+                }
             } else {
-                handleChat(chat);
+                await handleChat(chat);
             }
 
-            return response.send({ res: true });
+            response.send({ res: true });
+            return;
         }
 
         if (format === 'jsonl') {
@@ -684,7 +720,8 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
 
             if (!(jsonData.user_name !== undefined || jsonData.name !== undefined)) {
                 console.error('Incorrect chat format .jsonl');
-                return response.send({ error: true });
+                response.send({ error: true });
+                return;
             }
 
             // Do a tiny bit of work to import Chub Chat data
@@ -701,75 +738,82 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
             const fileName = `${characterName} - ${humanizedISO8601DateTime()} imported.jsonl`;
             const filePath = path.join(request.user.directories.chats, avatarUrl, fileName);
             if (flattenedChat !== data) {
-                writeFileAtomicSync(filePath, flattenedChat, 'utf8');
+                await writeFileAtomic(filePath, flattenedChat, 'utf8');
             } else {
-                fs.copyFileSync(pathToUpload, filePath);
+                await fsPromises.copyFile(pathToUpload, filePath);
             }
-            fs.unlinkSync(pathToUpload);
+            await fsPromises.unlink(pathToUpload);
             response.send({ res: true });
         }
     } catch (error) {
         console.error(error);
-        return response.send({ error: true });
+        response.send({ error: true });
     }
-});
+}));
 
-router.post('/group/get', (request, response) => {
+router.post('/group/get', asyncHandler(async function (request, response) {
     if (!request.body || !request.body.id) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     const id = request.body.id;
     const pathToFile = path.join(request.user.directories.groupChats, `${id}.jsonl`);
 
-    if (fs.existsSync(pathToFile)) {
-        const data = fs.readFileSync(pathToFile, 'utf8');
+    try {
+        await fsPromises.access(pathToFile);
+        const data = await fsPromises.readFile(pathToFile, 'utf8');
         const lines = data.split('\n');
 
         // Iterate through the array of strings and parse each line as JSON
         const jsonData = lines.map(line => tryParse(line)).filter(x => x);
-        return response.send(jsonData);
-    } else {
-        return response.send([]);
+        response.send(jsonData);
+    } catch {
+        response.send([]);
     }
-});
+}));
 
-router.post('/group/delete', (request, response) => {
+router.post('/group/delete', asyncHandler(async function (request, response) {
     if (!request.body || !request.body.id) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     const id = request.body.id;
     const pathToFile = path.join(request.user.directories.groupChats, `${id}.jsonl`);
 
-    if (fs.existsSync(pathToFile)) {
-        fs.unlinkSync(pathToFile);
-        return response.send({ ok: true });
+    try {
+        await fsPromises.access(pathToFile);
+        await fsPromises.unlink(pathToFile);
+        response.send({ ok: true });
+    } catch {
+        response.send({ error: true });
     }
+}));
 
-    return response.send({ error: true });
-});
-
-router.post('/group/save', (request, response) => {
+router.post('/group/save', asyncHandler(async function (request, response) {
     if (!request.body || !request.body.id) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     const id = request.body.id;
     const pathToFile = path.join(request.user.directories.groupChats, `${id}.jsonl`);
 
-    if (!fs.existsSync(request.user.directories.groupChats)) {
-        fs.mkdirSync(request.user.directories.groupChats);
+    try {
+        await fsPromises.access(request.user.directories.groupChats);
+    } catch {
+        await fsPromises.mkdir(request.user.directories.groupChats);
     }
 
     let chat_data = request.body.chat;
     let jsonlData = chat_data.map(JSON.stringify).join('\n');
-    writeFileAtomicSync(pathToFile, jsonlData, 'utf8');
+    await writeFileAtomic(pathToFile, jsonlData, 'utf8');
     getBackupFunction(request.user.profile.handle)(request.user.directories.backups, String(id), jsonlData);
-    return response.send({ ok: true });
-});
+    response.send({ ok: true });
+}));
 
-router.post('/search', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/search', validateAvatarUrlMiddleware, asyncHandler(async function (request, response) {
     try {
         const { query, avatar_url, group_id } = request.body;
         let chatFiles = [];
@@ -777,13 +821,13 @@ router.post('/search', validateAvatarUrlMiddleware, function (request, response)
         if (group_id) {
             // Find group's chat IDs first
             const groupDir = path.join(request.user.directories.groups);
-            const groupFiles = fs.readdirSync(groupDir)
+            const groupFiles = (await fsPromises.readdir(groupDir))
                 .filter(file => file.endsWith('.json'));
 
             let targetGroup;
             for (const groupFile of groupFiles) {
                 try {
-                    const groupData = JSON.parse(fs.readFileSync(path.join(groupDir, groupFile), 'utf8'));
+                    const groupData = JSON.parse(await fsPromises.readFile(path.join(groupDir, groupFile), 'utf8'));
                     if (groupData.id === group_id) {
                         targetGroup = groupData;
                         break;
@@ -794,50 +838,58 @@ router.post('/search', validateAvatarUrlMiddleware, function (request, response)
             }
 
             if (!targetGroup?.chats) {
-                return response.send([]);
+                response.send([]);
+                return;
             }
 
             // Find group chat files for given group ID
             const groupChatsDir = path.join(request.user.directories.groupChats);
-            chatFiles = targetGroup.chats
-                .map(chatId => {
+            chatFiles = (await Promise.all(targetGroup.chats
+                .map(async (chatId) => {
                     const filePath = path.join(groupChatsDir, `${chatId}.jsonl`);
-                    if (!fs.existsSync(filePath)) return null;
-                    const stats = fs.statSync(filePath);
-                    return {
-                        file_name: chatId,
-                        file_size: formatBytes(stats.size),
-                        path: filePath,
-                    };
-                })
+                    try {
+                        await fsPromises.access(filePath);
+                        const stats = await fsPromises.stat(filePath);
+                        return {
+                            file_name: chatId,
+                            file_size: formatBytes(stats.size),
+                            path: filePath,
+                        };
+                    } catch {
+                        return null;
+                    }
+                })))
                 .filter(x => x);
         } else {
             // Regular character chat directory
             const character_name = avatar_url.replace('.png', '');
             const directoryPath = path.join(request.user.directories.chats, character_name);
 
-            if (!fs.existsSync(directoryPath)) {
-                return response.send([]);
+            try {
+                await fsPromises.access(directoryPath);
+            } catch {
+                response.send([]);
+                return;
             }
 
-            chatFiles = fs.readdirSync(directoryPath)
+            chatFiles = (await Promise.all((await fsPromises.readdir(directoryPath))
                 .filter(file => file.endsWith('.jsonl'))
-                .map(fileName => {
+                .map(async (fileName) => {
                     const filePath = path.join(directoryPath, fileName);
-                    const stats = fs.statSync(filePath);
+                    const stats = await fsPromises.stat(filePath);
                     return {
                         file_name: fileName,
                         file_size: formatBytes(stats.size),
                         path: filePath,
                     };
-                });
+                })));
         }
 
         const results = [];
 
         // Search logic
         for (const chatFile of chatFiles) {
-            const data = fs.readFileSync(chatFile.path, 'utf8');
+            const data = await fsPromises.readFile(chatFile.path, 'utf8');
             const messages = data.split('\n')
                 .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
                 .filter(x => x && typeof x.mes === 'string');
@@ -847,7 +899,7 @@ router.post('/search', validateAvatarUrlMiddleware, function (request, response)
             }
 
             const lastMessage = messages[messages.length - 1];
-            const lastMesDate = lastMessage?.send_date || Math.round(fs.statSync(chatFile.path).mtimeMs);
+            const lastMesDate = lastMessage?.send_date || Math.round((await fsPromises.stat(chatFile.path)).mtimeMs);
 
             // If no search query, just return metadata
             if (!query) {
@@ -879,37 +931,39 @@ router.post('/search', validateAvatarUrlMiddleware, function (request, response)
 
         // Sort by last message date descending
         results.sort((a, b) => new Date(b.last_mes).getTime() - new Date(a.last_mes).getTime());
-        return response.send(results);
+        response.send(results);
 
     } catch (error) {
         console.error('Chat search error:', error);
-        return response.status(500).json({ error: 'Search failed' });
+        response.status(500).json({ error: 'Search failed' });
     }
-});
+}));
 
-router.post('/recent', async function (request, response) {
+router.post('/recent', asyncHandler(async function (request, response) {
     try {
         /** @type {{pngFile?: string, groupId?: string, filePath: string, mtime: number}[]} */
         const allChatFiles = [];
 
         const getCharacterChatFiles = async () => {
-            const pngDirents = await fs.promises.readdir(request.user.directories.characters, { withFileTypes: true });
+            const pngDirents = await fsPromises.readdir(request.user.directories.characters, { withFileTypes: true });
             const pngFiles = pngDirents.filter(e => e.isFile() && path.extname(e.name) === '.png').map(e => e.name);
 
             for (const pngFile of pngFiles) {
                 const chatsDirectory = pngFile.replace('.png', '');
                 const pathToChats = path.join(request.user.directories.chats, chatsDirectory);
-                if (!fs.existsSync(pathToChats)) {
+                try {
+                    await fsPromises.access(pathToChats);
+                } catch {
                     continue;
                 }
-                const pathStats = await fs.promises.stat(pathToChats);
+                const pathStats = await fsPromises.stat(pathToChats);
                 if (pathStats.isDirectory()) {
-                    const chatFiles = await fs.promises.readdir(pathToChats);
+                    const chatFiles = await fsPromises.readdir(pathToChats);
                     const jsonlFiles = chatFiles.filter(file => path.extname(file) === '.jsonl');
 
                     for (const file of jsonlFiles) {
                         const filePath = path.join(pathToChats, file);
-                        const stats = await fs.promises.stat(filePath);
+                        const stats = await fsPromises.stat(filePath);
                         allChatFiles.push({ pngFile, filePath, mtime: stats.mtimeMs });
                     }
                 }
@@ -917,22 +971,24 @@ router.post('/recent', async function (request, response) {
         };
 
         const getGroupChatFiles = async () => {
-            const groupDirents = await fs.promises.readdir(request.user.directories.groups, { withFileTypes: true });
+            const groupDirents = await fsPromises.readdir(request.user.directories.groups, { withFileTypes: true });
             const groups = groupDirents.filter(e => e.isFile() && path.extname(e.name) === '.json').map(e => e.name);
 
             for (const group of groups) {
                 try {
                     const groupPath = path.join(request.user.directories.groups, group);
-                    const groupContents = await fs.promises.readFile(groupPath, 'utf8');
+                    const groupContents = await fsPromises.readFile(groupPath, 'utf8');
                     const groupData = JSON.parse(groupContents);
 
                     if (Array.isArray(groupData.chats)) {
                         for (const chat of groupData.chats) {
                             const filePath = path.join(request.user.directories.groupChats, `${chat}.jsonl`);
-                            if (!fs.existsSync(filePath)) {
+                            try {
+                                await fsPromises.access(filePath);
+                            } catch {
                                 continue;
                             }
-                            const stats = await fs.promises.stat(filePath);
+                            const stats = await fsPromises.stat(filePath);
                             allChatFiles.push({ groupId: groupData.id, filePath, mtime: stats.mtimeMs });
                         }
                     }
@@ -956,9 +1012,9 @@ router.post('/recent', async function (request, response) {
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
         const validFiles = chatData.filter(i => i.file_name);
 
-        return response.send(validFiles);
+        response.send(validFiles);
     } catch (error) {
         console.error(error);
-        return response.sendStatus(500);
+        response.sendStatus(500);
     }
-});
+}));

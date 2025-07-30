@@ -29,4 +29,4 @@ export NODE_ENV=production
 npm i --no-audit --no-fund --loglevel=error --no-progress --omit=dev
 
 echo "Entering SillyTavern..."
-node "server.js" "$@"
+node --max-old-space-size=4096 --heapsnapshot-signal=SIGUSR2 "server.js" "$@"

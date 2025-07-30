@@ -9,11 +9,13 @@ import { promises as dnsPromise } from 'node:dns';
 import os from 'node:os';
 import crypto from 'node:crypto';
 
+// @ts-ignore
 import yaml from 'yaml';
 import { sync as commandExistsSync } from 'command-exists';
 import _ from 'lodash';
 import yauzl from 'yauzl';
 import mime from 'mime-types';
+// @ts-ignore
 import { default as simpleGit } from 'simple-git';
 import chalk from 'chalk';
 import bytes from 'bytes';
@@ -47,6 +49,40 @@ export function setConfigFilePath(configFilePath) {
 
 /**
  * Returns the config object from the config.yaml file.
+ * @returns {Promise<object>} Config object
+ */
+export async function getConfigAsync() {
+    if (CONFIG_PATH === null) {
+        console.trace();
+        console.error(color.red('No config file path set. Please set the config file path using setConfigFilePath().'));
+        process.exit(1);
+    }
+    if (CACHED_CONFIG) {
+        return CACHED_CONFIG;
+    }
+    try {
+        await fs.promises.access(CONFIG_PATH);
+    } catch {
+        console.error(color.red('No config file found. Please create a config.yaml file. The default config file can be found in the /default folder.'));
+        console.error(color.red('The program will now exit.'));
+        process.exit(1);
+    }
+
+    try {
+        const configContent = await fs.promises.readFile(CONFIG_PATH, 'utf8');
+        const config = yaml.parse(configContent);
+        CACHED_CONFIG = config;
+        return config;
+    } catch (error) {
+        console.error(color.red('FATAL: Failed to read config.yaml. Please check the file for syntax errors.'));
+        console.error(error.message);
+        process.exit(1);
+    }
+}
+
+/**
+ * Returns the config object from the config.yaml file.
+ * @deprecated Use getConfigAsync instead.
  * @returns {object} Config object
  */
 export function getConfig() {
@@ -77,6 +113,37 @@ export function getConfig() {
 
 /**
  * Returns the value for the given key from the config object.
+ * @param {string} key - Key to get from the config object
+ * @param {any} defaultValue - Default value to return if the key is not found
+ * @param {'number'|'boolean'|null} typeConverter - Type to convert the value to
+ * @returns {Promise<any>} Value for the given key
+ */
+export async function getConfigValueAsync(key, defaultValue = null, typeConverter = null) {
+    async function _getValue() {
+        const envKey = keyToEnv(key);
+        if (envKey in process.env) {
+            const needsJsonParse = defaultValue && typeof defaultValue === 'object';
+            const envValue = process.env[envKey];
+            return needsJsonParse ? (tryParse(envValue) ?? defaultValue) : envValue;
+        }
+        const config = await getConfigAsync();
+        return _.get(config, key, defaultValue);
+    }
+
+    const value = await _getValue();
+    switch (typeConverter) {
+        case 'number':
+            return isNaN(parseFloat(value)) ? defaultValue : parseFloat(value);
+        case 'boolean':
+            return toBoolean(value);
+        default:
+            return value;
+    }
+}
+
+/**
+ * Returns the value for the given key from the config object.
+ * @deprecated Use getConfigValueAsync instead.
  * @param {string} key - Key to get from the config object
  * @param {any} defaultValue - Default value to return if the key is not found
  * @param {'number'|'boolean'|null} typeConverter - Type to convert the value to
@@ -451,6 +518,37 @@ export function generateTimestamp() {
  * @param {string} prefix File prefix to filter backups by.
  * @param {number?} limit Maximum number of backups to keep. If null, the limit is determined by the `backups.common.numberOfBackups` config value.
  */
+export async function removeOldBackupsAsync(directory, prefix, limit = null) {
+    const MAX_BACKUPS = limit ?? Number(await getConfigValueAsync('backups.common.numberOfBackups', 50, 'number'));
+
+    try {
+        let files = (await fs.promises.readdir(directory)).filter(f => f.startsWith(prefix));
+        if (files.length > MAX_BACKUPS) {
+            const fileStats = await Promise.all(files.map(async f => {
+                const stats = await fs.promises.stat(path.join(directory, f));
+                return { file: f, mtimeMs: stats.mtimeMs };
+            }));
+
+            fileStats.sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+            const filesToDelete = fileStats.slice(0, fileStats.length - MAX_BACKUPS);
+
+            await Promise.all(filesToDelete.map(f => fs.promises.unlink(path.join(directory, f.file))));
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`Error removing old backups in ${directory}:`, error);
+        }
+    }
+}
+
+/**
+ * Remove old backups with the given prefix from a specified directory.
+ * @deprecated Use removeOldBackupsAsync instead.
+ * @param {string} directory The root directory to remove backups from.
+ * @param {string} prefix File prefix to filter backups by.
+ * @param {number?} limit Maximum number of backups to keep. If null, the limit is determined by the `backups.common.numberOfBackups` config value.
+ */
 export function removeOldBackups(directory, prefix, limit = null) {
     const MAX_BACKUPS = limit ?? Number(getConfigValue('backups.common.numberOfBackups', 50, 'number'));
 
@@ -474,27 +572,28 @@ export function removeOldBackups(directory, prefix, limit = null) {
  * Get a list of images in a directory.
  * @param {string} directoryPath Path to the directory containing the images
  * @param {'name' | 'date'} sortBy Sort images by name or date
- * @returns {string[]} List of image file names
+ * @returns {Promise<string[]>} List of image file names
  */
-export function getImages(directoryPath, sortBy = 'name') {
-    function getSortFunction() {
-        switch (sortBy) {
-            case 'name':
-                return Intl.Collator().compare;
-            case 'date':
-                return (a, b) => fs.statSync(path.join(directoryPath, a)).mtimeMs - fs.statSync(path.join(directoryPath, b)).mtimeMs;
-            default:
-                return (_a, _b) => 0;
-        }
+export async function getImages(directoryPath, sortBy = 'name') {
+    const files = await fs.promises.readdir(directoryPath);
+    const imageFiles = files.filter(file => {
+        const type = mime.lookup(file);
+        return type && type.startsWith('image/');
+    });
+
+    if (sortBy === 'date') {
+        const stats = await Promise.all(
+            imageFiles.map(file => fs.promises.stat(path.join(directoryPath, file))),
+        );
+        const fileStats = imageFiles.map((file, index) => ({
+            file,
+            mtimeMs: stats[index].mtimeMs,
+        }));
+        fileStats.sort((a, b) => a.mtimeMs - b.mtimeMs);
+        return fileStats.map(stat => stat.file);
     }
 
-    return fs
-        .readdirSync(directoryPath)
-        .filter(file => {
-            const type = mime.lookup(file);
-            return type && type.startsWith('image/');
-        })
-        .sort(getSortFunction());
+    return imageFiles.sort(Intl.Collator().compare);
 }
 
 /**
@@ -1098,6 +1197,23 @@ export function safeReadFileSync(filePath, options = { encoding: 'utf-8' }) {
 }
 
 /**
+ * A 'safe' version of `fs.readFile()`. Returns the contents of a file if it exists, falling back to a default value if not.
+ * @param {string} filePath Path of the file to be read.
+ * @param {Parameters<typeof fs.promises.readFile>[1]} options Options object to pass through to `fs.readFile()` (default: `{ encoding: 'utf-8' }`).
+ * @returns {Promise<string|Buffer|null>} The contents at `filePath` if it exists, or `null` if not.
+ */
+export async function safeReadFile(filePath, options = { encoding: 'utf-8' }) {
+    try {
+        return await fs.promises.readFile(filePath, options);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return null;
+        }
+        throw error;
+    }
+}
+
+/**
  * Set the title of the terminal window
  * @param {string} title Desired title for the window
  */
@@ -1131,32 +1247,32 @@ export function mutateJsonString(jsonString, mutation) {
  * Sets the permissions of a file or directory to be writable.
  * @param {string} targetPath Path to the file or directory
  */
-export function setPermissionsSync(targetPath) {
+export async function setPermissions(targetPath) {
     /**
      * Appends writable permission to the file mode.
      * @param {string} filePath Path to the file
      * @param {fs.Stats} stats File stats
      */
-    function appendWritablePermission(filePath, stats) {
+    async function appendWritablePermission(filePath, stats) {
         const currentMode = stats.mode;
         const newMode = currentMode | 0o200;
         if (newMode != currentMode) {
-            fs.chmodSync(filePath, newMode);
+            await fs.promises.chmod(filePath, newMode);
         }
     }
 
     try {
-        const stats = fs.statSync(targetPath);
+        const stats = await fs.promises.stat(targetPath);
 
         if (stats.isDirectory()) {
-            appendWritablePermission(targetPath, stats);
-            const files = fs.readdirSync(targetPath);
+            await appendWritablePermission(targetPath, stats);
+            const files = await fs.promises.readdir(targetPath);
 
-            files.forEach((file) => {
-                setPermissionsSync(path.join(targetPath, file));
-            });
+            for (const file of files) {
+                await setPermissions(path.join(targetPath, file));
+            }
         } else {
-            appendWritablePermission(targetPath, stats);
+            await appendWritablePermission(targetPath, stats);
         }
     } catch (error) {
         console.error(`Error setting write permissions for ${targetPath}:`, error);
@@ -1275,3 +1391,11 @@ export function flattenSchema(schema, api) {
 
     return flattenedSchema;
 }
+/**
+ * Wraps an async Express middleware function to handle promise rejections.
+ * @param {import('express').RequestHandler} fn The async middleware function.
+ * @returns {import('express').RequestHandler} A new middleware function that catches errors.
+ */
+export const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+};

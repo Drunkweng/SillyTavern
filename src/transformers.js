@@ -1,5 +1,5 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
@@ -50,6 +50,35 @@ const tasks = {
 };
 
 /**
+ * Optional TTL auto-dispose for pipelines to reduce resident memory.
+ * Controlled by config:
+ *   extensions.models.enableLocalPipelines: boolean (default true)
+ *   extensions.models.ttlSeconds: number (default 600)
+ */
+let ttlSeconds = 600;
+let enableLocalPipelines = true;
+try {
+    // Read config lazily (getConfigValue may throw early during init)
+    enableLocalPipelines = getConfigValue('extensions.models.enableLocalPipelines', true, 'boolean');
+    ttlSeconds = Math.max(0, Number(getConfigValue('extensions.models.ttlSeconds', 600, 'number')) || 0);
+} catch {}
+
+function scheduleDispose(taskKey) {
+    if (!tasks[taskKey]) return;
+    clearTimeout(tasks[taskKey].disposeTimer);
+    if (ttlSeconds <= 0) return;
+    tasks[taskKey].disposeTimer = setTimeout(async () => {
+        try {
+            if (tasks[taskKey].pipeline) {
+                await tasks[taskKey].pipeline.dispose();
+                tasks[taskKey].pipeline = null;
+                tasks[taskKey].currentModel = undefined;
+            }
+        } catch {}
+    }, ttlSeconds * 1000);
+}
+
+/**
  * Gets a RawImage object from a base64-encoded image.
  * @param {string} image Base64-encoded image
  * @returns {Promise<RawImage|null>} Object representing the image
@@ -88,29 +117,37 @@ async function migrateCacheToDataDir() {
     const oldCacheDir = path.join(process.cwd(), 'cache');
     const newCacheDir = path.join(globalThis.DATA_ROOT, '_cache');
 
-    if (!fs.existsSync(newCacheDir)) {
-        fs.mkdirSync(newCacheDir, { recursive: true });
+    try {
+        await fs.access(newCacheDir);
+    } catch {
+        await fs.mkdir(newCacheDir, { recursive: true });
     }
 
-    if (fs.existsSync(oldCacheDir) && fs.statSync(oldCacheDir).isDirectory()) {
-        const files = fs.readdirSync(oldCacheDir);
+    try {
+        await fs.access(oldCacheDir);
+        const stat = await fs.stat(oldCacheDir);
+        if (stat.isDirectory()) {
+            const files = await fs.readdir(oldCacheDir);
 
-        if (files.length === 0) {
-            return;
-        }
+            if (files.length === 0) {
+                return;
+            }
 
-        console.log('Migrating model cache files to data directory. Please wait...');
+            console.log('Migrating model cache files to data directory. Please wait...');
 
-        for (const file of files) {
-            try {
-                const oldPath = path.join(oldCacheDir, file);
-                const newPath = path.join(newCacheDir, file);
-                fs.cpSync(oldPath, newPath, { recursive: true, force: true });
-                fs.rmSync(oldPath, { recursive: true, force: true });
-            } catch (error) {
-                console.warn('Failed to migrate cache file. The model will be re-downloaded.', error);
+            for (const file of files) {
+                try {
+                    const oldPath = path.join(oldCacheDir, file);
+                    const newPath = path.join(newCacheDir, file);
+                    await fs.cp(oldPath, newPath, { recursive: true, force: true });
+                    await fs.rm(oldPath, { recursive: true, force: true });
+                } catch (error) {
+                    console.warn('Failed to migrate cache file. The model will be re-downloaded.', error);
+                }
             }
         }
+    } catch {
+        // old cache dir does not exist, ignore
     }
 }
 
@@ -122,6 +159,10 @@ async function migrateCacheToDataDir() {
  */
 export async function getPipeline(task, forceModel = '') {
     await migrateCacheToDataDir();
+
+    if (!enableLocalPipelines) {
+        throw new Error('Local transformers pipelines are disabled by configuration.');
+    }
 
     if (tasks[task].pipeline) {
         if (forceModel === '' || tasks[task].currentModel === forceModel) {
@@ -138,6 +179,7 @@ export async function getPipeline(task, forceModel = '') {
     const instance = await pipeline(task, model, { cache_dir: cacheDir, quantized: tasks[task].quantized ?? true, local_files_only: localOnly });
     tasks[task].pipeline = instance;
     tasks[task].currentModel = model;
+    scheduleDispose(task);
     // @ts-ignore
     return instance;
 }

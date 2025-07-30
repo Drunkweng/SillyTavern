@@ -48,3 +48,18 @@ body.login #passwordEntryBlock,
 body.login #passwordRecoveryBlock {
     margin: 2px;
 }
+
+#login_hint {
+    padding: 10px;
+    text-align: center;
+    color: var(--text-color);
+}
+
+#login_hint a {
+    color: var(--link-color, #5ab4f7);
+    text-decoration: none;
+}
+
+#login_hint a:hover {
+    text-decoration: underline;
+}

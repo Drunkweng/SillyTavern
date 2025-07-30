@@ -1,14 +1,23 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import mime from 'mime-types';
 import { getSettingsBackupFilePrefix } from './settings.js';
 import { CHAT_BACKUPS_PREFIX } from './chats.js';
-import { isPathUnderParent, tryParse } from '../util.js';
+import { isPathUnderParent, tryParse, asyncHandler } from '../util.js';
 import { SETTINGS_FILE } from '../constants.js';
 
 const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
+
+const fileExists = async (filePath) => {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+};
 
 /**
  * @typedef {object} DataMaidRawReport
@@ -125,7 +134,7 @@ export class DataMaidService {
      * @returns {Promise<DataMaidSanitizedRecord>} A sanitized record with the file name, hash, parent directory name, size, and modification time.
      */
     async #sanitizeRecord(name, withParent) {
-        const stat = fs.existsSync(name) ? await fs.promises.stat(name) : null;
+        const stat = (await fileExists(name)) ? await fs.stat(name) : null;
         return {
             name: path.basename(name),
             hash: sha256(name),
@@ -188,14 +197,14 @@ export class DataMaidService {
                 }
                 knownImageFullPaths.add(path.normalize(path.join(this.directories.root, image)));
             });
-            const images = await fs.promises.readdir(this.directories.userImages, { withFileTypes: true });
+            const images = await fs.readdir(this.directories.userImages, { withFileTypes: true });
             for (const dirent of images) {
                 const direntPath = path.join(dirent.parentPath, dirent.name);
                 if (dirent.isFile() && !knownImageFullPaths.has(direntPath)) {
                     result.push(direntPath);
                 }
                 if (dirent.isDirectory()) {
-                    const subdirFiles = await fs.promises.readdir(direntPath, { withFileTypes: true });
+                    const subdirFiles = await fs.readdir(direntPath, { withFileTypes: true });
                     for (const file of subdirFiles) {
                         const subdirFilePath = path.join(direntPath, file.name);
                         if (file.isFile() && !knownImageFullPaths.has(subdirFilePath)) {
@@ -239,9 +248,9 @@ export class DataMaidService {
                 }
             }
             const pathToSettings = path.join(this.directories.root, SETTINGS_FILE);
-            if (fs.existsSync(pathToSettings)) {
+            if (await fileExists(pathToSettings)) {
                 try {
-                    const settingsContent = await fs.promises.readFile(pathToSettings, 'utf-8');
+                    const settingsContent = await fs.readFile(pathToSettings, 'utf-8');
                     const settings = tryParse(settingsContent);
                     if (Array.isArray(settings?.extension_settings?.attachments)) {
                         for (const file of settings.extension_settings.attachments) {
@@ -270,7 +279,7 @@ export class DataMaidService {
             knownFiles.forEach(file => {
                 knownFileFullPaths.add(path.normalize(path.join(this.directories.root, file)));
             });
-            const files = await fs.promises.readdir(this.directories.files, { withFileTypes: true });
+            const files = await fs.readdir(this.directories.files, { withFileTypes: true });
             for (const file of files) {
                 const filePath = path.join(this.directories.files, file.name);
                 if (file.isFile() && !knownFileFullPaths.has(filePath)) {
@@ -294,16 +303,16 @@ export class DataMaidService {
 
         try {
             const knownChatFolders = new Set();
-            const characters = await fs.promises.readdir(this.directories.characters, { withFileTypes: true });
+            const characters = await fs.readdir(this.directories.characters, { withFileTypes: true });
             for (const file of characters) {
                 if (file.isFile() && path.parse(file.name).ext === '.png') {
                     knownChatFolders.add(file.name.replace('.png', ''));
                 }
             }
-            const chatFolders = await fs.promises.readdir(this.directories.chats, { withFileTypes: true });
+            const chatFolders = await fs.readdir(this.directories.chats, { withFileTypes: true });
             for (const folder of chatFolders) {
                 if (folder.isDirectory() && !knownChatFolders.has(folder.name)) {
-                    const chatFiles = await fs.promises.readdir(path.join(this.directories.chats, folder.name), { withFileTypes: true });
+                    const chatFiles = await fs.readdir(path.join(this.directories.chats, folder.name), { withFileTypes: true });
                     for (const file of chatFiles) {
                         if (file.isFile() && path.parse(file.name).ext === '.jsonl') {
                             result.push(path.join(this.directories.chats, folder.name, file.name));
@@ -327,13 +336,13 @@ export class DataMaidService {
         const result = [];
 
         try {
-            const groups = await fs.promises.readdir(this.directories.groups, { withFileTypes: true });
+            const groups = await fs.readdir(this.directories.groups, { withFileTypes: true });
             const knownGroupChats = new Set();
             for (const file of groups) {
                 if (file.isFile() && path.parse(file.name).ext === '.json') {
                     try {
                         const pathToFile = path.join(this.directories.groups, file.name);
-                        const fileContent = await fs.promises.readFile(pathToFile, 'utf-8');
+                        const fileContent = await fs.readFile(pathToFile, 'utf-8');
                         const groupData = tryParse(fileContent);
                         if (groupData?.chat_id) {
                             knownGroupChats.add(groupData.chat_id);
@@ -348,7 +357,7 @@ export class DataMaidService {
                     }
                 }
             }
-            const groupChats = await fs.promises.readdir(this.directories.groupChats, { withFileTypes: true });
+            const groupChats = await fs.readdir(this.directories.groupChats, { withFileTypes: true });
             for (const file of groupChats) {
                 if (file.isFile() && path.parse(file.name).ext === '.jsonl') {
                     if (!knownGroupChats.has(path.parse(file.name).name)) {
@@ -372,13 +381,13 @@ export class DataMaidService {
 
         try {
             const knownAvatars = new Set();
-            const avatars = await fs.promises.readdir(this.directories.characters, { withFileTypes: true });
+            const avatars = await fs.readdir(this.directories.characters, { withFileTypes: true });
             for (const file of avatars) {
                 if (file.isFile()) {
                     knownAvatars.add(file.name);
                 }
             }
-            const avatarThumbnails = await fs.promises.readdir(this.directories.thumbnailsAvatar, { withFileTypes: true });
+            const avatarThumbnails = await fs.readdir(this.directories.thumbnailsAvatar, { withFileTypes: true });
             for (const file of avatarThumbnails) {
                 if (file.isFile() && !knownAvatars.has(file.name)) {
                     result.push(path.join(this.directories.thumbnailsAvatar, file.name));
@@ -400,13 +409,13 @@ export class DataMaidService {
 
         try {
             const knownBackgrounds = new Set();
-            const backgrounds = await fs.promises.readdir(this.directories.backgrounds, { withFileTypes: true });
+            const backgrounds = await fs.readdir(this.directories.backgrounds, { withFileTypes: true });
             for (const file of backgrounds) {
                 if (file.isFile()) {
                     knownBackgrounds.add(file.name);
                 }
             }
-            const backgroundThumbnails = await fs.promises.readdir(this.directories.thumbnailsBg, { withFileTypes: true });
+            const backgroundThumbnails = await fs.readdir(this.directories.thumbnailsBg, { withFileTypes: true });
             for (const file of backgroundThumbnails) {
                 if (file.isFile() && !knownBackgrounds.has(file.name)) {
                     result.push(path.join(this.directories.thumbnailsBg, file.name));
@@ -428,13 +437,13 @@ export class DataMaidService {
 
         try {
             const knownPersonas = new Set();
-            const personas = await fs.promises.readdir(this.directories.avatars, { withFileTypes: true });
+            const personas = await fs.readdir(this.directories.avatars, { withFileTypes: true });
             for (const file of personas) {
                 if (file.isFile()) {
                     knownPersonas.add(file.name);
                 }
             }
-            const personaThumbnails = await fs.promises.readdir(this.directories.thumbnailsPersona, { withFileTypes: true });
+            const personaThumbnails = await fs.readdir(this.directories.thumbnailsPersona, { withFileTypes: true });
             for (const file of personaThumbnails) {
                 if (file.isFile() && !knownPersonas.has(file.name)) {
                     result.push(path.join(this.directories.thumbnailsPersona, file.name));
@@ -456,7 +465,7 @@ export class DataMaidService {
 
         try {
             const prefix = CHAT_BACKUPS_PREFIX;
-            const backups = await fs.promises.readdir(this.directories.backups, { withFileTypes: true });
+            const backups = await fs.readdir(this.directories.backups, { withFileTypes: true });
             for (const file of backups) {
                 if (file.isFile() && file.name.startsWith(prefix)) {
                     result.push(path.join(this.directories.backups, file.name));
@@ -478,7 +487,7 @@ export class DataMaidService {
 
         try {
             const prefix = getSettingsBackupFilePrefix(this.handle);
-            const backups = await fs.promises.readdir(this.directories.backups, { withFileTypes: true });
+            const backups = await fs.readdir(this.directories.backups, { withFileTypes: true });
             for (const file of backups) {
                 if (file.isFile() && file.name.startsWith(prefix)) {
                     result.push(path.join(this.directories.backups, file.name));
@@ -501,7 +510,7 @@ export class DataMaidService {
         try {
             const allChats = [];
 
-            const groupChats = await fs.promises.readdir(this.directories.groupChats, { withFileTypes: true });
+            const groupChats = await fs.readdir(this.directories.groupChats, { withFileTypes: true });
             for (const file of groupChats) {
                 if (file.isFile() && path.parse(file.name).ext === '.jsonl') {
                     const chatMessages = await this.#parseChatFile(path.join(this.directories.groupChats, file.name));
@@ -509,10 +518,10 @@ export class DataMaidService {
                 }
             }
 
-            const chatDirectories = await fs.promises.readdir(this.directories.chats, { withFileTypes: true });
+            const chatDirectories = await fs.readdir(this.directories.chats, { withFileTypes: true });
             for (const directory of chatDirectories) {
                 if (directory.isDirectory()) {
-                    const chatFiles = await fs.promises.readdir(path.join(this.directories.chats, directory.name), { withFileTypes: true });
+                    const chatFiles = await fs.readdir(path.join(this.directories.chats, directory.name), { withFileTypes: true });
                     for (const file of chatFiles) {
                         if (file.isFile() && path.parse(file.name).ext === '.jsonl') {
                             const chatMessages = await this.#parseChatFile(path.join(this.directories.chats, directory.name, file.name));
@@ -539,12 +548,12 @@ export class DataMaidService {
         try {
             const allMetadata = [];
 
-            const groups = await fs.promises.readdir(this.directories.groups, { withFileTypes: true });
+            const groups = await fs.readdir(this.directories.groups, { withFileTypes: true });
             for (const file of groups) {
                 if (file.isFile() && path.parse(file.name).ext === '.json') {
                     try {
                         const pathToFile = path.join(this.directories.groups, file.name);
-                        const fileContent = await fs.promises.readFile(pathToFile, 'utf-8');
+                        const fileContent = await fs.readFile(pathToFile, 'utf-8');
                         const groupData = tryParse(fileContent);
                         if (groupData?.chat_metadata && filterFn(groupData.chat_metadata)) {
                             allMetadata.push(groupData.chat_metadata);
@@ -558,10 +567,10 @@ export class DataMaidService {
                 }
             }
 
-            const chatDirectories = await fs.promises.readdir(this.directories.chats, { withFileTypes: true });
+            const chatDirectories = await fs.readdir(this.directories.chats, { withFileTypes: true });
             for (const directory of chatDirectories) {
                 if (directory.isDirectory()) {
-                    const chatFiles = await fs.promises.readdir(path.join(this.directories.chats, directory.name), { withFileTypes: true });
+                    const chatFiles = await fs.readdir(path.join(this.directories.chats, directory.name), { withFileTypes: true });
                     for (const file of chatFiles) {
                         if (file.isFile() && path.parse(file.name).ext === '.jsonl') {
                             const chatMessages = await this.#parseChatFile(path.join(this.directories.chats, directory.name, file.name));
@@ -589,7 +598,7 @@ export class DataMaidService {
      */
     async #parseChatFile(filePath) {
         try {
-            const content = await fs.promises.readFile(filePath, 'utf-8');
+            const content = await fs.readFile(filePath, 'utf-8');
             const chatData = content.split('\n').map(tryParse).filter(Boolean);
             return chatData;
         } catch (error) {
@@ -625,7 +634,7 @@ export class DataMaidService {
 
 export const router = express.Router();
 
-router.post('/report', async (req, res) => {
+router.post('/report', asyncHandler(async (req, res) => {
     try {
         if (!req.user || !req.user.directories) {
             return res.sendStatus(403);
@@ -642,9 +651,9 @@ router.post('/report', async (req, res) => {
         console.error('[Data Maid] Error generating data maid report:', error);
         return res.sendStatus(500);
     }
-});
+}));
 
-router.post('/finalize', async (req, res) => {
+router.post('/finalize', asyncHandler(async (req, res) => {
     try {
         if (!req.user || !req.user.directories) {
             return res.sendStatus(403);
@@ -671,9 +680,9 @@ router.post('/finalize', async (req, res) => {
         console.error('[Data Maid] Error finalizing the token:', error);
         return res.sendStatus(500);
     }
-});
+}));
 
-router.get('/view', async (req, res) => {
+router.get('/view', asyncHandler(async (req, res) => {
     try {
         if (!req.user || !req.user.directories) {
             return res.sendStatus(403);
@@ -706,13 +715,13 @@ router.get('/view', async (req, res) => {
         }
 
         const pathToFile = fileEntry.path;
-        const fileExists = fs.existsSync(pathToFile);
+        const fileExistsResult = await fileExists(pathToFile);
 
-        if (!fileExists) {
+        if (!fileExistsResult) {
             return res.sendStatus(404);
         }
 
-        const fileBuffer = await fs.promises.readFile(pathToFile);
+        const fileBuffer = await fs.readFile(pathToFile);
         const mimeType = mime.lookup(pathToFile) || 'text/plain';
         res.setHeader('Content-Type', mimeType);
         return res.send(fileBuffer);
@@ -720,9 +729,9 @@ router.get('/view', async (req, res) => {
         console.error('[Data Maid] Error viewing file:', error);
         return res.sendStatus(500);
     }
-});
+}));
 
-router.post('/delete', async (req, res) => {
+router.post('/delete', asyncHandler(async (req, res) => {
     try {
         if (!req.user || !req.user.directories) {
             return res.sendStatus(403);
@@ -754,13 +763,13 @@ router.post('/delete', async (req, res) => {
             }
 
             const pathToFile = fileEntry.path;
-            const fileExists = fs.existsSync(pathToFile);
+            const fileExistsResult = await fileExists(pathToFile);
 
-            if (!fileExists) {
+            if (!fileExistsResult) {
                 continue;
             }
 
-            await fs.promises.unlink(pathToFile);
+            await fs.unlink(pathToFile);
         }
 
         return res.sendStatus(204);
@@ -768,4 +777,4 @@ router.post('/delete', async (req, res) => {
         console.error('[Data Maid] Error deleting files:', error);
         return res.sendStatus(500);
     }
-});
+}));

@@ -1,98 +1,110 @@
-# -- DATA CONFIGURATION --
-# Root directory for user data storage
+# -- 数据配置 --
+# 用户数据存储的根目录
 dataRoot: ./data
-# -- SERVER CONFIGURATION --
-# Listen for incoming connections
+# -- 服务器配置 --
+# 是否监听传入的连接
 listen: false
-# Listen on a specific address, supports IPv4 and IPv6
+# 监听特定地址，支持 IPv4 和 IPv6
 listenAddress:
   ipv4: 0.0.0.0
   ipv6: '[::]'
-# Enables IPv6 and/or IPv4 protocols. Need to have at least one enabled!
-# - Use option "auto" to automatically detect support
-# - Use true or false (no qoutes) to enable or disable each protocol
+# 启用 IPv6 和/或 IPv4 协议。至少需要启用一个！
+# - 使用 "auto" 选项自动检测支持情况
+# - 使用 true 或 false（不带引号）来启用或禁用每个协议
 protocol:
     ipv4: true
     ipv6: false
-# Prefers IPv6 for DNS. Enable this on ISPs that don't have issues with IPv6
+# DNS 解析时优先使用 IPv6。如果你的 ISP 对 IPv6 没有问题，可以启用此选项
 dnsPreferIPv6: false
-# -- BROWSER LAUNCH CONFIGURATION --
+# -- 浏览器启动配置 --
 browserLaunch:
-  # Open the browser automatically on server startup.
+  # 服务器启动时自动打开浏览器
   enabled: true
-  # Browser to use for opening the URL.
-  # NOT SUPPORTED ON ANDROID DEVICES.
-  # - Use "default" to use the system default browser
-  # - Use "firefox", "chrome", "edge"
+  # 用于打开 URL 的浏览器
+  # ANDROID 设备不支持此功能
+  # - 使用 "default" 使用系统默认浏览器
+  # - 使用 "firefox", "chrome", "edge"
   browser: 'default'
-  # Overrides the hostname that opens in the browser.
-  # - Use "auto" to let the server decide
-  # - Use options like 'localhost', 'st.example.com'
+  # 覆盖在浏览器中打开的主机名
+  # - 使用 "auto" 让服务器决定
+  # - 使用 'localhost', 'st.example.com' 等选项
   hostname: 'auto'
-  # Overrides the port for run in the browser.
-  # - Use -1 to use the server port.
-  # - Specify a port to override the default.
+  # 覆盖在浏览器中运行的端口
+  # - 使用 -1 使用服务器端口
+  # - 指定端口以覆盖默认值
   port: -1
-  # Avoids using 'localhost' as the hostname in auto mode.
-  # Use if you don't have 'localhost' in your hosts file
+  # 在自动模式下避免使用 'localhost' 作为主机名
+  # 如果你的 hosts 文件中没有 'localhost'，请使用此选项
   avoidLocalhost: false
-# Server port
+# 服务器端口
 port: 8000
-# -- SSL options --
+# -- SSL 选项 --
 ssl:
-  # Enable SSL/TLS encryption
+  # 是否启用 SSL/TLS 加密
   enabled: false
-  # Path to certificate (relative to server root)
+  # 证书路径 (相对于服务器根目录)
   certPath: "./certs/cert.pem"
-  # Path to private key (relative to server root)
+  # 私钥路径 (相对于服务器根目录)
   keyPath: "./certs/privkey.pem"
-  # Private key passphrase (leave empty if not needed)
-  # For better security, use a CLI argument or an environment variable (SILLYTAVERN_SSL_KEYPASSPHRASE)
+  # 私钥密码 (如果不需要则留空)
+  # 为提高安全性，请使用命令行参数或环境变量 (SILLYTAVERN_SSL_KEYPASSPHRASE)
   keyPassphrase: ""
-# -- SECURITY CONFIGURATION --
-# Toggle whitelist mode
+# -- 安全配置 --
+# 切换白名单模式
 whitelistMode: true
-# Whitelist will also verify IP in X-Forwarded-For / X-Real-IP headers
+# 白名单也将验证 X-Forwarded-For / X-Real-IP 头中的 IP
 enableForwardedWhitelist: true
-# Whitelist of allowed IP addresses
+# 允许的 IP 地址白名单
 whitelist:
   - ::1
   - 127.0.0.1
-# Automatically whitelist Docker host and gateway IPs
+# 自动将 Docker 主机和网关 IP 添加到白名单
 whitelistDockerHosts: true
-# Toggle basic authentication for endpoints
+# 切换端点的基本身份验证
 basicAuthMode: false
-# Basic authentication credentials
+# 基本身份验证凭据
 basicAuthUser:
   username: "user"
   password: "password"
-# Enables CORS proxy middleware
+# 启用 CORS 代理中间件
 enableCorsProxy: false
-# -- REQUEST PROXY CONFIGURATION --
+# -- 请求代理配置 --
 requestProxy:
-  # If a proxy is enabled, all outgoing HTTP/HTTPS requests will be routed through it.
+  # 如果启用了代理，所有传出的 HTTP/HTTPS 请求都将通过它路由
   enabled: false
-  # Proxy URL. Possible protocols: http, https, socks, socks5, socks4, pac
+  # 代理 URL。可能的协议：http, https, socks, socks5, socks4, pac
   url: "socks5://username:password@example.com:1080"
-  # Proxy bypass list. Requests to these hosts won't be routed through the proxy.
+  # 代理绕过列表。对这些主机的请求不会通过代理路由
   bypass:
     - localhost
     - 127.0.0.1
-# Enable multi-user mode
+
+# -- 数据库配置 --
+# 当启用数据库认证模式时，这些配置用于连接到外部 MySQL 数据库
+database:
+  # 数据库服务器地址
+  host: "localhost"
+  # 数据库用户名
+  user: "root"
+  # 数据库密码
+  password: ""
+  # 数据库名称
+  database: "sillytavern"
+  # 数据库端口（默认为3306）
+  port: 3306
+# 启用多用户模式
 enableUserAccounts: false
-# Enable discreet login mode: hides user list on the login screen
+# 启用谨慎登录模式：隐藏登录屏幕上的用户列表
 enableDiscreetLogin: false
-# Enable's authlia based auto login. Only enable this if you
-# have setup and installed Authelia as a middle-ware on your
-# reverse proxy
+# 启用数据库认证模式
+# 启用后，系统将不会提示为本地用户设置密码
+enableDatabaseAuth: false
+# 启用基于 Authelia 的自动登录。只有在你已经设置并安装了 Authelia 作为反向代理中间件时才启用此功能
 # https://www.authelia.com/
-# This will use auto login to an account with the same username
-# as that used for authlia. (Ensure the username in authlia
-# is an exact match in lowercase with that in sillytavern)
+# 这将使用自动登录到与 authlia 使用的用户名相同的账户
+# （确保 authlia 中的用户名与 sillytavern 中的用户名完全匹配，且为小写）
 autheliaAuth: false
-# If `basicAuthMode` and this are enabled then
-# the username and passwords for basic auth are the same as those
-# for the individual accounts
+# 如果启用了 `basicAuthMode` 和此选项，则基本身份验证的用户名和密码与各个账户的用户名和密码相同
 perUserBasicAuth: false
 # Host whitelist configuration. Recommended if you're using a listen mode
 hostWhitelist:
@@ -107,91 +119,91 @@ hostWhitelist:
   # - .trycloudflare.com
   hosts: []
 
-# User session timeout *in seconds* (defaults to 24 hours).
-## Set to a positive number to expire session after a certain time of inactivity
-## Set to 0 to expire session when the browser is closed
-## Set to a negative number to disable session expiration
+# 用户会话超时时间（以秒为单位，默认为 24 小时）
+## 设置为正数以在特定不活动时间后使会话过期
+## 设置为 0 以在浏览器关闭时使会话过期
+## 设置为负数以禁用会话过期
 sessionTimeout: -1
-# Disable CSRF protection - NOT RECOMMENDED
+# 禁用 CSRF 保护 - 不推荐
 disableCsrfProtection: false
-# Disable startup security checks - NOT RECOMMENDED
+# 禁用启动安全检查 - 不推荐
 securityOverride: false
-# -- LOGGING CONFIGURATION --
+# -- 日志配置 --
 logging:
-  # Enable access logging to access.log file and console output
-  # Records new connections with timestamp, IP address and user agent
+  # 启用访问日志记录到 access.log 文件和控制台输出
+  # 记录带有时间戳、IP 地址和用户代理的新连接
   enableAccessLog: true
-  # Minimum log level to display in the terminal (DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3)
+  # 在终端中显示的最低日志级别（DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3）
   minLogLevel: 0
-# -- RATE LIMITING CONFIGURATION --
+# -- 速率限制配置 --
 rateLimiting:
-  # Use X-Real-IP header instead of socket IP for rate limiting
-  # Only enable this if you are using a properly configured reverse proxy (like Nginx/traefik/Caddy)
+  # 使用 X-Real-IP 头而不是套接字 IP 进行速率限制
+  # 只有在使用正确配置的反向代理（如 Nginx/traefik/Caddy）时才启用此功能
   preferRealIpHeader: false
 
-## BACKUP CONFIGURATION
+## 备份配置
 backups:
-  # Common settings for all backup types
+  # 所有备份类型的通用设置
   common:
-    # Number of backups to keep for each chat and settings file
+    # 为每个聊天和设置文件保留的备份数量
     numberOfBackups: 50
   chat:
-    # Enable automatic chat backups
+    # 启用自动聊天备份
     enabled: true
-    # Verify integrity of chat files before saving
+    # 在保存之前验证聊天文件的完整性
     checkIntegrity: true
-    # Maximum number of chat backups to keep per user (starting from the most recent). Set to -1 to keep all backups.
+    # 每个用户保留的最大聊天备份数量（从最近的开始）。设置为 -1 以保留所有备份。
     maxTotalBackups: -1
-    # Interval in milliseconds to throttle chat backups per user
+    # 以毫秒为单位限制每个用户聊天备份的间隔
     throttleInterval: 10000
 
-# THUMBNAILING CONFIGURATION
+# 缩略图配置
 thumbnails:
-  # Enable thumbnail generation
+  # 启用缩略图生成
   enabled: true
-  # Image format of avatar thumbnails:
-  # * "jpg": best compression with adjustable quality, no transparency
-  # * "png": preserves transparency but increases filesize by about 100%
-  # Changing this only affects new thumbnails. To recreate the old ones, clear out /thumbnails folder in your user data.
+  # 头像缩略图的图像格式：
+  # * "jpg": 最佳压缩，可调整质量，无透明度
+  # * "png": 保留透明度，但文件大小增加约 100%
+  # 更改此选项仅影响新的缩略图。要重新创建旧的缩略图，请清除用户数据中的 /thumbnails 文件夹。
   format: "jpg"
-  # JPG thumbnail quality (0-100)
+  # JPG 缩略图质量 (0-100)
   quality: 95
-  # Maximum thumbnail dimensions per type [width, height]
+  # 每种类型的最大缩略图尺寸 [宽度, 高度]
   dimensions: { 'bg': [160, 90], 'avatar': [96, 144], 'persona': [96, 144] }
 
-# PERFORMANCE-RELATED CONFIGURATION
+# 性能相关配置
 performance:
-  # Enables lazy loading of character cards. Improves performances with large card libraries.
-  # May have compatibility issues with some extensions.
+  # 启用角色卡片的延迟加载。提高大型角色卡片库的性能。
+  # 可能与某些扩展存在兼容性问题。
   lazyLoadCharacters: false
-  # The maximum amount of memory that parsed character cards can use. Set to 0 to disable memory caching.
-  memoryCacheCapacity: '100mb'
-  # Enables disk caching for character cards. Improves performances with large card libraries.
+  # 解析的角色卡片可以使用的最大内存量。设置为 0 以禁用内存缓存。
+  memoryCacheCapacity: '32mb'
+  # 启用角色卡片的磁盘缓存。提高大型角色卡片库的性能。
   useDiskCache: true
 
-# CACHE BUSTER CONFIGURATION
-# IMPORTANT: Requires localhost or a domain with HTTPS, otherwise will not work!
+# 缓存破坏器配置
+# 重要：需要 localhost 或具有 HTTPS 的域名，否则将无法工作！
 cacheBuster:
-  # Clear browser cache on first load or after uploading image files
+  # 在首次加载或上传图像文件后清除浏览器缓存
   enabled: false
-  # Only clear cache for the specified user agent regex pattern
-  # Example: 'firefox|safari' (case-insensitive)
+  # 仅清除指定用户代理正则表达式模式的缓存
+  # 示例：'firefox|safari'（不区分大小写）
   userAgentPattern: ''
 
-# Allow secret keys exposure via API
+# 允许通过 API 暴露密钥
 allowKeysExposure: false
-# Skip new default content checks
+# 跳过新的默认内容检查
 skipContentCheck: false
-# Allowed hosts for card downloads
+# 允许下载卡片的主机
 whitelistImportDomains:
   - localhost
   - cdn.discordapp.com
   - files.catbox.moe
   - raw.githubusercontent.com
   - char-archive.evulid.cc
-# API request overrides (for KoboldAI and Text Completion APIs)
-## Note: host includes the port number if it's not the default (80 or 443)
-## Format is an array of objects:
+# API 请求覆盖（用于 KoboldAI 和文本完成 API）
+## 注意：如果不是默认端口（80 或 443），host 包括端口号
+## 格式是一个对象数组：
 ## - hosts:
 ##   - example.com
 ##   headers:
@@ -201,81 +213,85 @@ whitelistImportDomains:
 ##     User-Agent: "Googlebot/2.1 (+http://www.google.com/bot.html)"
 requestOverrides: []
 
-# EXTENSIONS CONFIGURATION
+# 扩展配置
 extensions:
-  # Enable UI extensions
+  # 启用 UI 扩展
   enabled: true
-  # Automatically update extensions when a release version changes
+  # 当发布版本更改时自动更新扩展
   autoUpdate: true
   models:
-    # Enables automatic model download from HuggingFace
+    # 是否启用本地 transformers 管线（ASR/TTS/Embedding/Captioning）。生产环境可关闭节省内存
+    enableLocalPipelines: false
+    # 本地管线空闲自动卸载TTL（秒）。0表示不自动卸载
+    ttlSeconds: 600
+    # 启用从 HuggingFace 自动下载模型
     autoDownload: true
-    # Additional models for extensions. Expects model IDs from HuggingFace model hub in ONNX format
+    # 扩展的附加模型。期望来自 HuggingFace 模型中心的 ONNX 格式模型 ID
     classification: Cohee/distilbert-base-uncased-go-emotions-onnx
     captioning: Xenova/vit-gpt2-image-captioning
     embedding: Cohee/jina-embeddings-v2-base-en
     speechToText: Xenova/whisper-small
     textToSpeech: Xenova/speecht5_tts
 
-# Additional model tokenizers can be downloaded on demand.
-# Disabling will fallback to another locally available tokenizer.
+# 可以按需下载其他模型分词器。
+# 禁用将回退到另一个本地可用的分词器。
 enableDownloadableTokenizers: true
-# -- OPENAI CONFIGURATION --
-# A placeholder message to use in strict prompt post-processing mode when the prompt doesn't start with a user message
+# -- OPENAI 配置 --
+# 在严格提示后处理模式下，当提示不以用户消息开头时使用的占位符消息
 promptPlaceholder: "[Start a new chat]"
 openai:
-  # Will send a random user ID to OpenAI completion API
+  # 将向 OpenAI 完成 API 发送随机用户 ID
   randomizeUserId: false
-  # If not empty, will add this as a system message to the start of every caption completion prompt
-  # Example: "Perform the instructions to the best of your ability.\n" (for LLaVA)
-  # Not used in image inlining mode
+  # 如果不为空，将此作为系统消息添加到每个标题完成提示的开头
+  # 示例："尽力执行指令。\n"（用于 LLaVA）
+  # 在图像内联模式下不使用
   captionSystemPrompt: ""
-# -- DEEPL TRANSLATION CONFIGURATION --
+# -- DEEPL 翻译配置 --
 deepl:
-  # Available options: default, more, less, prefer_more, prefer_less
+  # 可用选项：default, more, less, prefer_more, prefer_less
   formality: default
-# -- MISTRAL API CONFIGURATION --
+# -- MISTRAL API 配置 --
 mistral:
-  # Enables prefilling of the reply with the last assistant message in the prompt
-  # CAUTION: The prefix is echoed into the completion. You may want to use regex to trim it out.
+  # 启用使用提示中的最后一个助手消息预填充回复
+  # 注意：前缀会回显到完成中。您可能需要使用正则表达式将其修剪掉。
   enablePrefix: false
-# -- OLLAMA API CONFIGURATION --
+# -- OLLAMA API 配置 --
 ollama:
-  # Controls how long the model will stay loaded into memory following the request
-  # * -1: Keep the model loaded indefinitely
-  # * 0: Unload the model immediately after the request
-  # * N (any positive number): Keep the model loaded for N seconds after the request.
+  # 控制模型在请求后将保持加载到内存中的时间
+  # * -1：无限期保持模型加载
+  # * 0：请求后立即卸载模型
+  # * N（任何正数）：在请求后将模型保持加载 N 秒。
   keepAlive: -1
-  # Controls the "num_batch" (batch size) parameter of the generation request
-  # * -1: Use the default value of the model
-  # * N (positive number): Use the specified value. Must be a power of 2, e.g. 128, 256, 512, etc.
+  # 控制生成请求的 "num_batch"（批量大小）参数
+  # * -1：使用模型的默认值
+  # * N（正数）：使用指定值。必须是 2 的幂，例如 128、256、512 等。
   batchSize: -1
-# -- ANTHROPIC CLAUDE API CONFIGURATION --
+# -- ANTHROPIC CLAUDE API 配置 --
 claude:
-  # Enables caching of the system prompt (if supported).
+  # 启用系统提示的缓存（如果支持）。
   # https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-  # -- IMPORTANT! --
-  # Use only when the prompt before the chat history is static and doesn't change between requests
-  # (e.g {{random}} macro or lorebooks not as in-chat injections).
-  # Otherwise, you'll just waste money on cache misses.
+  # -- 重要！ --
+  # 仅在聊天历史之前的提示是静态的并且在请求之间不会更改时使用
+  # （例如 {{random}} 宏或知识库不是作为聊天注入）。
+  # 否则，您将只是在缓存未命中上浪费金钱。
   enableSystemPromptCache: false
-  # Enables caching of the message history at depth (if supported).
+  # 启用深度消息历史缓存（如果支持）。
   # https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-  # -- IMPORTANT! --
-  # Use with caution. Behavior may be unpredictable and no guarantees can or will be made.
-  # Set to an integer to specify the desired depth. 0 (which does NOT include the prefill)
-  # should be ideal for most use cases.
-  # Any value other than a non-negative integer will be ignored and caching at depth will not be enabled.
+  # -- 重要！ --
+  # 谨慎使用。行为可能不可预测，不能或不会做出任何保证。
+  # 设置为整数以指定所需的深度。0（不包括预填充）
+  # 应该是大多数用例的理想选择。
+  # 任何非负整数值以外的值将被忽略，并且不会启用深度缓存。
   cachingAtDepth: -1
-  # Use 1h TTL instead of the default 5m.
-  ## 5m: base price x 1.25
-  ## 1h: base price x 2
+  # 使用 1 小时 TTL 而不是默认的 5 分钟。
+  ## 5 分钟：基础价格 x 1.25
+  ## 1 小时：基础价格 x 2
   extendedTTL: false
-# -- GOOGLE GEMINI API CONFIGURATION --
+# -- GOOGLE GEMINI API 配置 --
 gemini:
-  # API endpoint version ("v1beta" or "v1alpha")
+  # API 端点版本（"v1beta" 或 "v1alpha"）
   apiVersion: 'v1beta'
-# -- SERVER PLUGIN CONFIGURATION --
+# -- 服务器插件配置 --
 enableServerPlugins: false
-# Attempt to automatically update server plugins on startup
+# 尝试在启动时自动更新服务器插件
 enableServerPluginsAutoUpdate: true

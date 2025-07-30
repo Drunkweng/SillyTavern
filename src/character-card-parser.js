@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { Buffer } from 'node:buffer';
 
 import encode from './png/encode.js';
@@ -88,7 +88,7 @@ export const parse = async (cardUrl, format) => {
 
     switch (fileFormat) {
         case 'png': {
-            const buffer = fs.readFileSync(cardUrl);
+            const buffer = await fs.readFile(cardUrl);
             return read(buffer);
         }
     }

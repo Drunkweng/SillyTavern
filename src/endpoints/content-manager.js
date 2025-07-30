@@ -1,19 +1,22 @@
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { promisify } from 'node:util';
 import { Buffer } from 'node:buffer';
 
 import express from 'express';
 import fetch from 'node-fetch';
+// @ts-ignore
 import sanitize from 'sanitize-filename';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import writeFileAtomic from 'write-file-atomic';
 
-import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
+import { getConfigValue, color, setPermissions, isValidUrl } from '../util.js';
 import { write } from '../character-card-parser.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 
+const gunzip = promisify(zlib.gunzip);
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
 const contentIndexPath = path.join(contentDirectory, 'index.json');
@@ -58,11 +61,11 @@ export const CONTENT_TYPES = {
 /**
  * Gets the default presets from the content directory.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {object[]} Array of default presets
+ * @returns {Promise<any[]>} Array of default presets
  */
-export function getDefaultPresets(directories) {
+export async function getDefaultPresets(directories) {
     try {
-        const contentIndex = getContentIndex();
+        const contentIndex = await getContentIndex();
         const presets = [];
 
         for (const contentItem of contentIndex) {
@@ -83,17 +86,19 @@ export function getDefaultPresets(directories) {
 /**
  * Gets a default JSON file from the content directory.
  * @param {string} filename Name of the file to get
- * @returns {object | null} JSON object or null if the file doesn't exist
+ * @returns {Promise<any | null>} JSON object or null if the file doesn't exist
  */
-export function getDefaultPresetFile(filename) {
+export async function getDefaultPresetFile(filename) {
     try {
         const contentPath = path.join(contentDirectory, filename);
 
-        if (!fs.existsSync(contentPath)) {
+        try {
+            await fs.access(contentPath);
+        } catch {
             return null;
         }
 
-        const fileContent = fs.readFileSync(contentPath, 'utf8');
+        const fileContent = await fs.readFile(contentPath, 'utf8');
         return JSON.parse(fileContent);
     } catch (err) {
         console.warn(`Failed to get default file ${filename}`, err);
@@ -111,12 +116,14 @@ export function getDefaultPresetFile(filename) {
 async function seedContentForUser(contentIndex, directories, forceCategories) {
     let anyContentAdded = false;
 
-    if (!fs.existsSync(directories.root)) {
-        fs.mkdirSync(directories.root, { recursive: true });
+    try {
+        await fs.access(directories.root);
+    } catch {
+        await fs.mkdir(directories.root, { recursive: true });
     }
 
     const contentLogPath = path.join(directories.root, 'content.log');
-    const contentLog = getContentLog(contentLogPath);
+    const contentLog = await getContentLog(contentLogPath);
 
     for (const contentItem of contentIndex) {
         // If the content item is already in the log, skip it
@@ -131,7 +138,9 @@ async function seedContentForUser(contentIndex, directories, forceCategories) {
 
         const contentPath = path.join(contentItem.folder, contentItem.filename);
 
-        if (!fs.existsSync(contentPath)) {
+        try {
+            await fs.access(contentPath);
+        } catch {
             console.warn(`Content file ${contentItem.filename} is missing`);
             continue;
         }
@@ -147,18 +156,21 @@ async function seedContentForUser(contentIndex, directories, forceCategories) {
         const targetPath = path.join(contentTarget, basePath);
         contentLog.push(contentItem.filename);
 
-        if (fs.existsSync(targetPath)) {
+        try {
+            await fs.access(targetPath);
             console.warn(`Content file ${contentItem.filename} already exists in ${contentTarget}`);
             continue;
+        } catch {
+            // file does not exist, this is good
         }
 
-        fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
-        setPermissionsSync(targetPath);
+        await fs.cp(contentPath, targetPath, { recursive: true, force: false });
+        await setPermissions(targetPath);
         console.info(`Content file ${contentItem.filename} copied to ${contentTarget}`);
         anyContentAdded = true;
     }
 
-    writeFileAtomicSync(contentLogPath, contentLog.join('\n'));
+    await writeFileAtomic(contentLogPath, contentLog.join('\n'));
     return anyContentAdded;
 }
 
@@ -175,7 +187,7 @@ export async function checkForNewContent(directoriesList, forceCategories = []) 
             return;
         }
 
-        const contentIndex = getContentIndex();
+        const contentIndex = await getContentIndex();
         let anyContentAdded = false;
 
         for (const directories of directoriesList) {
@@ -198,13 +210,14 @@ export async function checkForNewContent(directoriesList, forceCategories = []) 
 
 /**
  * Gets combined content index from the content and scaffold directories.
- * @returns {ContentItem[]} Array of content index
+ * @returns {Promise<ContentItem[]>} Array of content index
  */
-function getContentIndex() {
+async function getContentIndex() {
     const result = [];
 
-    if (fs.existsSync(scaffoldIndexPath)) {
-        const scaffoldIndexText = fs.readFileSync(scaffoldIndexPath, 'utf8');
+    try {
+        await fs.access(scaffoldIndexPath);
+        const scaffoldIndexText = await fs.readFile(scaffoldIndexPath, 'utf8');
         const scaffoldIndex = JSON.parse(scaffoldIndexText);
         if (Array.isArray(scaffoldIndex)) {
             scaffoldIndex.forEach((item) => {
@@ -212,10 +225,13 @@ function getContentIndex() {
             });
             result.push(...scaffoldIndex);
         }
+    } catch {
+        // ignore
     }
 
-    if (fs.existsSync(contentIndexPath)) {
-        const contentIndexText = fs.readFileSync(contentIndexPath, 'utf8');
+    try {
+        await fs.access(contentIndexPath);
+        const contentIndexText = await fs.readFile(contentIndexPath, 'utf8');
         const contentIndex = JSON.parse(contentIndexText);
         if (Array.isArray(contentIndex)) {
             contentIndex.forEach((item) => {
@@ -223,6 +239,8 @@ function getContentIndex() {
             });
             result.push(...contentIndex);
         }
+    } catch {
+        // ignore
     }
 
     return result;
@@ -232,10 +250,10 @@ function getContentIndex() {
  * Gets content by type and format.
  * @param {string} type Type of content
  * @param {'json'|'string'|'raw'} format Format of content
- * @returns {string[]|Buffer[]} Array of content
+ * @returns {Promise<(string|Buffer)[]>} Array of content
  */
-export function getContentOfType(type, format) {
-    const contentIndex = getContentIndex();
+export async function getContentOfType(type, format) {
+    const contentIndex = await getContentIndex();
     const indexItems = contentIndex.filter((item) => item.type === type && item.folder);
     const files = [];
     for (const item of indexItems) {
@@ -244,7 +262,7 @@ export function getContentOfType(type, format) {
         }
         try {
             const filePath = path.join(item.folder, item.filename);
-            const fileContent = fs.readFileSync(filePath);
+            const fileContent = await fs.readFile(filePath);
             switch (format) {
                 case 'json':
                     files.push(JSON.parse(fileContent.toString()));
@@ -315,14 +333,16 @@ function getTargetByType(type, directories) {
 /**
  * Gets the content log from the content log file.
  * @param {string} contentLogPath Path to the content log file
- * @returns {string[]} Array of content log lines
+ * @returns {Promise<string[]>} Array of content log lines
  */
-function getContentLog(contentLogPath) {
-    if (!fs.existsSync(contentLogPath)) {
+async function getContentLog(contentLogPath) {
+    try {
+        await fs.access(contentLogPath);
+    } catch {
         return [];
     }
 
-    const contentLogText = fs.readFileSync(contentLogPath, 'utf8');
+    const contentLogText = await fs.readFile(contentLogPath, 'utf8');
     return contentLogText.split('\n');
 }
 
@@ -665,6 +685,186 @@ async function downloadRisuCharacter(uuid) {
     return { buffer, fileName, fileType };
 }
 
+/**
+ * Parse Soulkyn URL to extract the character slug.
+ * @param {string} url Soulkyn character URL
+ * @returns {string | null} Slug of the character
+ */
+function parseSoulkynUrl(url) {
+    // Example: https://soulkyn.com/l/en-US/@kayla-marie
+    const pattern = /^https:\/\/soulkyn\.com\/l\/[a-z]{2}-[A-Z]{2}\/@([\w\d-]+)/i;
+    const match = url.match(pattern);
+    return match ? match[1] : null;
+}
+
+/**
+ * Download Soulkyn character card
+ * @param {string} slug Slug of the character
+ * @returns {Promise<{buffer: Buffer, fileName: string, fileType: string} | null>}
+ */
+async function downloadSoulkynCharacter(slug) {
+    const soulkynReplacements = [
+        // https://soulkyn.com/l/en-US/help/character-backgrounds-advanced#variables-you-can-use-in-character-background-text
+        { pattern: /__USER_?NAME__/gi, replacement: '{{user}}' },
+        { pattern: /__PERSONA_?NAME__/gi, replacement: '{{char}}' },
+        // ST doesn't support gender-specific pronoun macros
+        { pattern: /__U_PRONOUN_1__/gi, replacement: 'they' },
+        { pattern: /__U_PRONOUN_2__/gi, replacement: 'them' },
+        { pattern: /__U_PRONOUN_3__/gi, replacement: 'their' },
+        { pattern: /__U_PRONOUN_4__/gi, replacement: 'themselves' },
+        { pattern: /__(USER_)?PRONOUN__/gi, replacement: 'they' },
+        { pattern: /__(USER_)?CPRONOUN__/gi, replacement: 'them' },
+        { pattern: /__(USER_)?UPRONOUN__/gi, replacement: 'their' },
+        // HTML tags -> Markdown syntax
+        { pattern: /<(strong|b)>/gi, replacement: '**' },
+        { pattern: /<\/(strong|b)>/gi, replacement: '**' },
+        { pattern: /<(em|i)>/gi, replacement: '*' },
+        { pattern: /<\/(em|i)>/gi, replacement: '*' },
+    ];
+
+    const normalizeContent = (str) => soulkynReplacements.reduce((acc, { pattern, replacement }) => acc.replace(pattern, replacement), str);
+
+    try {
+        const url = `https://soulkyn.com/_special/rest/Sk/public/Persona/${slug}`;
+        const result = await fetch(url, {
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+        });
+        if (result.ok) {
+            /** @type {any} */
+            const soulkynCharData = await result.json();
+
+            if (soulkynCharData.result !== 'success') {
+                console.error('Soulkyn returned error', soulkynCharData.message);
+                throw new Error(`Failed to download character: ${soulkynCharData.message}`);
+            }
+
+            // Fetch avatar
+            let avatarBuffer = null;
+            if (soulkynCharData.data?.Avatar?.FWSUUID) {
+                const avatarUrl = `https://rub.soulkyn.com/${soulkynCharData.data.Avatar.FWSUUID}/`;
+                const avatarResult = await fetch(avatarUrl, { headers: { 'User-Agent': USER_AGENT } });
+
+                if (avatarResult.ok) {
+                    const avatarContentType = avatarResult.headers.get('content-type');
+                    if (avatarContentType === 'image/png') {
+                        avatarBuffer = Buffer.from(await avatarResult.arrayBuffer());
+                    } else {
+                        console.warn(`Soulkyn character (${slug}) avatar is not PNG: ${avatarContentType}`);
+                    }
+                } else {
+                    console.warn(`Soulkyn character (${slug}) avatar download failed: ${avatarResult.status}`);
+                }
+            } else {
+                console.warn(`Soulkyn character (${slug}) does not have an avatar`);
+            }
+
+            // Fallback to default avatar
+            if (!avatarBuffer) {
+                const defaultAvatarPath = path.join(serverDirectory, DEFAULT_AVATAR_PATH);
+                avatarBuffer = await fs.readFile(defaultAvatarPath);
+            }
+
+            const d = soulkynCharData.data;
+            soulkynReplacements.push({ pattern: d.Username, replacement: '{{char}}' });
+
+            // Parse Soulkyn data into character chard
+            const charData = {
+                name: d.Username,
+                first_mes: '',
+                tags: [],
+                description: '',
+                creator: d.User.Username,
+                creator_notes: '',
+                alternate_greetings: [],
+                character_version: '',
+                mes_example: '',
+                post_history_instructions: '',
+                system_prompt: '',
+                scenario: '',
+                personality: '',
+                extensions: {
+                    soulkyn_slug: slug,
+                    soulkyn_id: d.UUID,
+                },
+            };
+
+            if (d?.PersonaIntroText) {
+                const match = d.PersonaIntroText.match(/^(?:\[Scenario:\s*([\s\S]*?)\]\s*)?([\s\S]*)$/);
+                if (match) {
+                    if (match[1]) {
+                        charData.scenario = normalizeContent(match[1].trim());
+                    }
+                    charData.first_mes = normalizeContent(match[2].trim());
+                }
+            }
+
+            const descriptionArr = ['Name: {{char}}'];
+            if (d?.Version?.Age) {
+                descriptionArr.push(`Age: ${d.Version.Age}`);
+            }
+            if (d?.Version?.Gender) {
+                descriptionArr.push(`Gender: ${d.Version.Gender}`);
+            }
+            if (d?.Version?.Race?.Name && !d.Version.Race.Name.match(/no preset/i)) {
+                let race = d.Version.Race.Name;
+                if (d.Version.Race?.Description) {
+                    race += ` (${d.Version.Race.Description})`;
+                }
+                descriptionArr.push(`Race: ${race}`);
+            }
+            if (d?.PersonalityType) {
+                descriptionArr.push(`Personality type: ${d.PersonalityType}`);
+            }
+            if (Array.isArray(d?.Version?.PropertyPersonality)) {
+                const traits = d.Version.PropertyPersonality.map((t) => t.Value).join(', ');
+                descriptionArr.push(`Personality Traits: ${traits}`);
+            }
+            if (Array.isArray(d?.Version?.PropertyPhysical)) {
+                const traits = d.Version.PropertyPhysical.map((t) => t.Value).join(', ');
+                descriptionArr.push(`Physical Traits: ${traits}`);
+            }
+            if (Array.isArray(d?.Clothes?.Preset)) {
+                descriptionArr.push(`Clothes: ${d.Clothes.Preset.join(', ')}`);
+            }
+            if (d?.Avatar?.Caption) {
+                descriptionArr.push(`Image description featuring {{char}}: ${d.Avatar.Caption.replace(/\n+/g, ' ')}`);
+            }
+            if (d?.Version?.WelcomeMessage) {
+                if (charData.first_mes) {
+                    descriptionArr.push(`{{char}}'s self-description: "${d.Version.WelcomeMessage}"`);
+                } else {
+                    // Some characters lack `PersonaIntroText`. In that case we use `Version.WelcomeMessage` for `first_mes`
+                    charData.first_mes = normalizeContent(d.Version.WelcomeMessage);
+                }
+            }
+            charData.description = normalizeContent(descriptionArr.join('\n'));
+
+            if (Array.isArray(d?.Version?.ChatExamplesValue)) {
+                charData.mes_example = d.Version.ChatExamplesValue.map((example) => `<START>\n${normalizeContent(example)}`).join('\n');
+            }
+
+            if (Array.isArray(d?.PersonaTags)) {
+                charData.tags = d.PersonaTags.map((t) => t.Slug);
+            }
+
+            // Character card
+            const buffer = write(avatarBuffer, JSON.stringify({
+                'spec': 'chara_card_v2',
+                'spec_version': '2.0',
+                'data': charData,
+            }));
+
+            const fileName = `${sanitize(d.UUID)}.png`;
+            const fileType = 'image/png';
+
+            return { buffer, fileName, fileType };
+        }
+    } catch (error) {
+        console.error('Error downloading character:', error);
+        throw error;
+    }
+    return null;
+}
 /** * Check if the given string is a valid Perchance UUID.
  * @param {string} uuid UUID string to check
  * @returns {boolean} True if the UUID is valid, false otherwise
@@ -769,12 +969,12 @@ async function downloadPerchanceCharacter(slug) {
 /**
  * Extracts Perchance character data from a gzipped response.
  * @param {import('node-fetch').Response} result Fetch response containing gzipped character data
- * @returns {Promise<Object>} Parsed Perchance character data
+ * @returns {Promise<any>} Parsed Perchance character data
  * @throws {Error} If the character data is invalid or missing required fields
  */
 async function extractPerchanceCharacterFromGz(result) {
-    const compressedBuffer = await result.arrayBuffer();
-    const decompressedBuffer = zlib.gunzipSync(compressedBuffer);
+    const compressedBuffer = Buffer.from(await result.arrayBuffer());
+    const decompressedBuffer = await gunzip(compressedBuffer);
 
     // inside the gz file, there is a file of the same name without extensions, but it is a json file
 
@@ -801,7 +1001,7 @@ async function extractPerchanceCharacterFromGz(result) {
  */
 async function fetchPerchanceAvatar(avatarUrl, isAvatarBase64) {
     const defaultAvatarPath = path.join(serverDirectory, DEFAULT_AVATAR_PATH);
-    const defaultAvatarBuffer = fs.readFileSync(defaultAvatarPath);
+    const defaultAvatarBuffer = await fs.readFile(defaultAvatarPath);
 
     if (!avatarUrl || (!isAvatarBase64 && !isValidUrl(avatarUrl))) {
         console.warn('Perchance character does not have an avatar, it is not base64, or it is an invalid url, using default avatar');
@@ -854,9 +1054,9 @@ async function fetchPerchanceAvatar(avatarUrl, isAvatarBase64) {
 }
 
 /**
-* @param {String} url
-* @returns {String | null } UUID of the character
-*/
+ * @param {String} url
+ * @returns {String | null } UUID of the character
+ */
 function getUuidFromUrl(url) {
     // Extract UUID from URL
     const uuidRegex = /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/;
@@ -894,7 +1094,8 @@ export const router = express.Router();
 
 router.post('/importURL', async (request, response) => {
     if (!request.body.url) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     try {
@@ -908,13 +1109,15 @@ router.post('/importURL', async (request, response) => {
         const isPygmalionContent = host.includes('pygmalion.chat');
         const isAICharacterCardsContent = host.includes('aicharactercards.com');
         const isRisu = host.includes('realm.risuai.net');
+        const isSoulkyn = host.includes('soulkyn.com');
         const isPerchance = host.includes('perchance.org');
         const isGeneric = isHostWhitelisted(host);
 
         if (isPygmalionContent) {
             const uuid = getUuidFromUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
 
             type = 'character';
@@ -922,7 +1125,8 @@ router.post('/importURL', async (request, response) => {
         } else if (isJannnyContent) {
             const uuid = getUuidFromUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
 
             type = 'character';
@@ -930,7 +1134,8 @@ router.post('/importURL', async (request, response) => {
         } else if (isAICharacterCardsContent) {
             const AICCParsed = parseAICC(url);
             if (!AICCParsed) {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
             type = 'character';
             result = await downloadAICCCharacter(AICCParsed);
@@ -947,20 +1152,31 @@ router.post('/importURL', async (request, response) => {
                 result = await downloadChubLorebook(chubParsed.id);
             }
             else {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
         } else if (isRisu) {
             const uuid = parseRisuUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
 
             type = 'character';
             result = await downloadRisuCharacter(uuid);
+        } else if (isSoulkyn) {
+            const soulkynSlug = parseSoulkynUrl(url);
+            if (!soulkynSlug) {
+                response.sendStatus(404);
+                return;
+            }
+            type = 'character';
+            result = await downloadSoulkynCharacter(soulkynSlug);
         } else if (isPerchance) {
             const perchanceSlug = parsePerchanceSlug(url);
             if (!perchanceSlug) {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
             type = 'character';
             result = await downloadPerchanceCharacter(perchanceSlug);
@@ -970,26 +1186,29 @@ router.post('/importURL', async (request, response) => {
             result = await downloadGenericPng(url);
         } else {
             console.error(`Received an import for "${getHostFromUrl(url)}", but site is not whitelisted. This domain must be added to the config key "whitelistImportDomains" to allow import from this source.`);
-            return response.sendStatus(404);
+            response.sendStatus(404);
+            return;
         }
 
         if (!result) {
-            return response.sendStatus(404);
+            response.sendStatus(404);
+            return;
         }
 
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${encodeURI(result.fileName)}"`);
         response.set('X-Custom-Content-Type', type);
-        return response.send(result.buffer);
+        response.send(result.buffer);
     } catch (error) {
         console.error('Importing custom content failed', error);
-        return response.sendStatus(500);
+        response.sendStatus(500);
     }
 });
 
 router.post('/importUUID', async (request, response) => {
     if (!request.body.url) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     try {
@@ -1026,7 +1245,8 @@ router.post('/importUUID', async (request, response) => {
                 result = await downloadChubLorebook(uuid);
             }
             else {
-                return response.sendStatus(404);
+                response.sendStatus(404);
+                return;
             }
         }
 
@@ -1037,9 +1257,9 @@ router.post('/importUUID', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${result.fileName}"`);
         response.set('X-Custom-Content-Type', uuidType);
-        return response.send(result.buffer);
+        response.send(result.buffer);
     } catch (error) {
         console.error('Importing custom content failed', error);
-        return response.sendStatus(500);
+        response.sendStatus(500);
     }
 });

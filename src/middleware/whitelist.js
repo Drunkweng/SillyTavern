@@ -7,7 +7,7 @@ import ipMatching from 'ip-matching';
 import isDocker from 'is-docker';
 
 import { getIpFromRequest } from '../express-common.js';
-import { color, getConfigValue, safeReadFileSync } from '../util.js';
+import { color, getConfigValue } from '../util.js';
 
 const whitelistPath = path.join(process.cwd(), './whitelist.txt');
 const enableForwardedWhitelist = !!getConfigValue('enableForwardedWhitelist', false, 'boolean');
@@ -76,9 +76,8 @@ async function addDockerHostsToWhitelist() {
  * @returns {Promise<import('express').RequestHandler>} Promise that resolves to the middleware function
  */
 export default async function getWhitelistMiddleware() {
-    const forbiddenWebpage = Handlebars.compile(
-        safeReadFileSync('./public/error/forbidden-by-whitelist.html') ?? '',
-    );
+    const forbiddenTemplate = await fs.promises.readFile('./public/error/forbidden-by-whitelist.html', 'utf-8').catch(() => '');
+    const forbiddenWebpage = Handlebars.compile(forbiddenTemplate);
 
     const noLogPaths = [
         '/favicon.ico',
@@ -92,9 +91,10 @@ export default async function getWhitelistMiddleware() {
         const userAgent = req.headers['user-agent'];
 
         //clientIp = req.connection.remoteAddress.split(':').pop();
-        if (!whitelist.some(x => ipMatching.matches(clientIp, ipMatching.getMatch(x)))
-            || forwardedIp && !whitelist.some(x => ipMatching.matches(forwardedIp, ipMatching.getMatch(x)))
-        ) {
+        const isClientIpWhitelisted = whitelist.some(x => ipMatching.matches(clientIp, ipMatching.getMatch(x)));
+        const isForwardedIpWhitelisted = forwardedIp && whitelist.some(x => ipMatching.matches(forwardedIp, ipMatching.getMatch(x)));
+
+        if (!isClientIpWhitelisted && !isForwardedIpWhitelisted) {
             // Log the connection attempt with real IP address
             const ipDetails = forwardedIp
                 ? `${clientIp} (forwarded from ${forwardedIp})`
@@ -108,7 +108,8 @@ export default async function getWhitelistMiddleware() {
                 );
             }
 
-            return res.status(403).send(forbiddenWebpage({ ipDetails }));
+            res.status(403).send(forbiddenWebpage({ ipDetails }));
+            return;
         }
         next();
     };

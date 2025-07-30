@@ -2,6 +2,7 @@
 import path from 'node:path';
 import util from 'node:util';
 import net from 'node:net';
+import fs from 'node:fs';
 import dns from 'node:dns';
 import process from 'node:process';
 
@@ -52,10 +53,10 @@ import {
     color,
     removeColorFormatting,
     getSeparator,
-    safeReadFileSync,
     setupLogLevel,
     setWindowTitle,
     getConfigValue,
+    asyncHandler,
 } from './util.js';
 import { UPLOADS_DIRECTORY } from './constants.js';
 import { ensureThumbnailCache } from './endpoints/thumbnails.js';
@@ -68,6 +69,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
+
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -97,8 +99,9 @@ app.use(helmet({
 app.use(compression());
 app.use(responseTime());
 
-app.use(bodyParser.json({ limit: '500mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '500mb' }));
+// Tighten JSON/urlencoded payload limits to avoid excessive memory spikes
+app.use(bodyParser.json({ limit: '32mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '32mb' }));
 
 // CORS Settings //
 const CORS = cors({
@@ -124,7 +127,7 @@ if (cliArgs.listen) {
 }
 
 if (cliArgs.enableCorsProxy) {
-    app.use('/proxy/:url(*)', corsProxyMiddleware);
+    app.use('/proxy/:url(*)', asyncHandler(corsProxyMiddleware));
 } else {
     app.use('/proxy/:url(*)', async (_, res) => {
         const message = 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.';
@@ -133,15 +136,18 @@ if (cliArgs.enableCorsProxy) {
     });
 }
 
-app.use(cookieSession({
-    name: getCookieSessionName(),
-    sameSite: 'lax',
-    httpOnly: true,
-    maxAge: getSessionCookieAge(),
-    secret: getCookieSecret(globalThis.DATA_ROOT),
-}));
-
-app.use(setUserDataMiddleware);
+// Cookie session middleware will be initialized inside the async IIFE
+app.use(async (req, res, next) => {
+    const secret = await getCookieSecret(globalThis.DATA_ROOT);
+    cookieSession({
+        name: getCookieSessionName(),
+        sameSite: 'lax',
+        httpOnly: true,
+        maxAge: getSessionCookieAge(),
+        secret: secret,
+    })(req, res, next);
+});
+app.use(asyncHandler(setUserDataMiddleware));
 
 // CSRF Protection //
 if (!cliArgs.disableCsrf) {
@@ -221,7 +227,7 @@ app.use(express.static(path.join(serverDirectory, 'public'), {}));
 app.use('/api/users', usersPublicRouter);
 
 // Everything below this line requires authentication
-app.use(requireLoginMiddleware);
+app.use(asyncHandler(requireLoginMiddleware));
 app.post('/api/ping', (request, response) => {
     if (request.query.extend && request.session) {
         request.session.touch = Date.now();
@@ -232,7 +238,7 @@ app.post('/api/ping', (request, response) => {
 
 // File uploads
 const uploadsPath = path.join(cliArgs.dataRoot, UPLOADS_DIRECTORY);
-app.use(multer({ dest: uploadsPath, limits: { fieldSize: 500 * 1024 * 1024 } }).single('avatar'));
+app.use(multer({ dest: uploadsPath, limits: { fileSize: 16 * 1024 * 1024, fieldSize: 2 * 1024 * 1024 } }).single('avatar'));
 app.use(multerMonkeyPatch);
 
 app.get('/version', async function (_, response) {
@@ -383,8 +389,8 @@ async function postSetupTasks(result) {
 /**
  * Registers a not-found error response if a not-found error page exists. Should only be called after all other middlewares have been registered.
  */
-function apply404Middleware() {
-    const notFoundWebpage = safeReadFileSync(path.join(serverDirectory, 'public/error/url-not-found.html')) ?? '';
+async function apply404Middleware() {
+    const notFoundWebpage = await fs.promises.readFile(path.join(serverDirectory, 'public/error/url-not-found.html'), 'utf-8').catch(() => '');
     app.use((req, res) => {
         res.status(404).send(notFoundWebpage);
     });
@@ -408,13 +414,21 @@ function setDnsResolutionOrder() {
 }
 
 // User storage module needs to be initialized before starting the server
-initUserStorage(globalThis.DATA_ROOT)
-    .then(setDnsResolutionOrder)
-    .then(ensurePublicDirectoriesExist)
-    .then(migrateUserData)
-    .then(migrateSystemPrompts)
-    .then(verifySecuritySettings)
-    .then(preSetupTasks)
-    .then(apply404Middleware)
-    .then(() => new ServerStartup(app, cliArgs).start())
-    .then(postSetupTasks);
+(async () => {
+    try {
+        await initUserStorage(globalThis.DATA_ROOT);
+        setDnsResolutionOrder();
+        await ensurePublicDirectoriesExist();
+        await migrateUserData();
+        await migrateSystemPrompts();
+        await verifySecuritySettings();
+
+        await preSetupTasks();
+        await apply404Middleware();
+        const startupResult = await new ServerStartup(app, cliArgs).start();
+        await postSetupTasks(startupResult);
+    } catch (error) {
+        console.error('A critical error has occurred during server startup:', error);
+        process.exit(1);
+    }
+})();

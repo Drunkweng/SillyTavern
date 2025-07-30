@@ -4,8 +4,11 @@ import storage from 'node-persist';
 import express from 'express';
 import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 import { getIpFromRequest, getRealIpFromHeader } from '../express-common.js';
-import { color, Cache, getConfigValue } from '../util.js';
-import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt } from '../users.js';
+import { color, Cache, getConfigValue, asyncHandler } from '../util.js';
+import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt, DEFAULT_USER, ensurePublicDirectoriesExist, getUserDirectories } from '../users.js';
+import { query } from '../database.js';
+import bcrypt from 'bcrypt';
+import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 
 const DISCREET_LOGIN = getConfigValue('enableDiscreetLogin', false, 'boolean');
 const PREFER_REAL_IP_HEADER = getConfigValue('rateLimiting.preferRealIpHeader', false, 'boolean');
@@ -23,7 +26,7 @@ const recoverLimiter = new RateLimiterMemory({
     duration: 300,
 });
 
-router.post('/list', async (_request, response) => {
+router.post('/list', asyncHandler(async (_request, response) => {
     try {
         if (DISCREET_LOGIN) {
             return response.sendStatus(204);
@@ -54,11 +57,13 @@ router.post('/list', async (_request, response) => {
         console.error('User list failed:', error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/login', async (request, response) => {
+router.post('/login', asyncHandler(async (request, response) => {
     try {
-        if (!request.body.handle) {
+        const { handle, password } = request.body;
+
+        if (!handle || !password) {
             console.warn('Login failed: Missing required fields');
             return response.status(400).json({ error: 'Missing required fields' });
         }
@@ -66,22 +71,54 @@ router.post('/login', async (request, response) => {
         const ip = getIpAddress(request);
         await loginLimiter.consume(ip);
 
-        /** @type {import('../users.js').User} */
-        const user = await storage.getItem(toKey(request.body.handle));
+        const [dbUsers] = await query('SELECT * FROM users WHERE username = ?', [handle]);
+        const dbUser = dbUsers[0];
 
-        if (!user) {
-            console.error('Login failed: User', request.body.handle, 'not found');
+        if (!dbUser) {
+            console.error('Login failed: User', handle, 'not found in database');
             return response.status(403).json({ error: 'Incorrect credentials' });
         }
 
-        if (!user.enabled) {
-            console.warn('Login failed: User', user.handle, 'is disabled');
+        const passwordMatch = await bcrypt.compare(password, dbUser.password);
+
+        if (!passwordMatch) {
+            console.warn('Login failed: Incorrect password for', dbUser.username);
+            return response.status(403).json({ error: 'Incorrect credentials' });
+        }
+
+        let internalUser = await storage.getItem(toKey(dbUser.username));
+
+        if (!internalUser) {
+            console.log(`User ${dbUser.username} not found locally. Creating new local profile.`);
+
+            // 创建与示例代码类似的本地用户
+            const salt = getPasswordSalt();
+            // 本地不存储密码，因为验证已经在数据库完成
+            const newUser = {
+                handle: dbUser.username,
+                name: dbUser.username,
+                created: Date.now(),
+                password: '',
+                salt: salt,
+                admin: dbUser.role === 100,
+                enabled: true,
+            };
+
+            await storage.setItem(toKey(newUser.handle), newUser);
+
+            // 创建用户目录
+            console.info('Creating data directories for', newUser.handle);
+            await ensurePublicDirectoriesExist();
+            const directories = getUserDirectories(newUser.handle);
+
+            await checkForNewContent([directories], Object.values(CONTENT_TYPES));
+
+            internalUser = newUser;
+        }
+
+        if (!internalUser.enabled) {
+            console.warn('Login failed: User', internalUser.handle, 'is disabled');
             return response.status(403).json({ error: 'User is disabled' });
-        }
-
-        if (user.password && user.password !== getPasswordHash(request.body.password, user.salt)) {
-            console.warn('Login failed: Incorrect password for', user.handle);
-            return response.status(403).json({ error: 'Incorrect credentials' });
         }
 
         if (!request.session) {
@@ -90,9 +127,9 @@ router.post('/login', async (request, response) => {
         }
 
         await loginLimiter.delete(ip);
-        request.session.handle = user.handle;
-        console.info('Login successful:', user.handle, 'from', ip, 'at', new Date().toLocaleString());
-        return response.json({ handle: user.handle });
+        request.session.handle = internalUser.handle;
+        console.info('Login successful via MySQL:', internalUser.handle, 'from', ip, 'at', new Date().toLocaleString());
+        return response.json({ handle: internalUser.handle });
     } catch (error) {
         if (error instanceof RateLimiterRes) {
             console.error('Login failed: Rate limited from', getIpAddress(request));
@@ -102,9 +139,9 @@ router.post('/login', async (request, response) => {
         console.error('Login failed:', error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/recover-step1', async (request, response) => {
+router.post('/recover-step1', asyncHandler(async (request, response) => {
     try {
         if (!request.body.handle) {
             console.warn('Recover step 1 failed: Missing required fields');
@@ -142,9 +179,9 @@ router.post('/recover-step1', async (request, response) => {
         console.error('Recover step 1 failed:', error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/recover-step2', async (request, response) => {
+router.post('/recover-step2', asyncHandler(async (request, response) => {
     try {
         if (!request.body.handle || !request.body.code) {
             console.warn('Recover step 2 failed: Missing required fields');
@@ -175,7 +212,7 @@ router.post('/recover-step2', async (request, response) => {
 
         if (request.body.newPassword) {
             const salt = getPasswordSalt();
-            user.password = getPasswordHash(request.body.newPassword, salt);
+            user.password = await getPasswordHash(request.body.newPassword, salt);
             user.salt = salt;
             await storage.setItem(toKey(user.handle), user);
         } else {
@@ -196,4 +233,4 @@ router.post('/recover-step2', async (request, response) => {
         console.error('Recover step 2 failed:', error);
         return response.sendStatus(500);
     }
-});
+}));

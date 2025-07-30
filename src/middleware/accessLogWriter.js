@@ -1,7 +1,7 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { getRealIpFromHeader } from '../express-common.js';
-import { color, getConfigValue } from '../util.js';
+import { color, getConfigValue, asyncHandler } from '../util.js';
 
 const enableAccessLog = getConfigValue('logging.enableAccessLog', true, 'boolean');
 
@@ -9,16 +9,25 @@ const knownIPs = new Set();
 
 export const getAccessLogPath = () => path.join(globalThis.DATA_ROOT, 'access.log');
 
-export function migrateAccessLog() {
+async function fileExists(path) {
     try {
-        if (!fs.existsSync('access.log')) {
+        await fs.access(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function migrateAccessLog() {
+    try {
+        if (!await fileExists('access.log')) {
             return;
         }
         const logPath = getAccessLogPath();
-        if (fs.existsSync(logPath)) {
+        if (await fileExists(logPath)) {
             return;
         }
-        fs.renameSync('access.log', logPath);
+        await fs.rename('access.log', logPath);
         console.log(color.yellow('Migrated access.log to new location:'), logPath);
     } catch (e) {
         console.error('Failed to migrate access log:', e);
@@ -31,7 +40,7 @@ export function migrateAccessLog() {
  * @returns {import('express').RequestHandler}
  */
 export default function accessLoggerMiddleware() {
-    return function (req, res, next) {
+    return asyncHandler(async function (req, res, next) {
         const clientIp = getRealIpFromHeader(req);
         const userAgent = req.headers['user-agent'];
 
@@ -46,14 +55,14 @@ export default function accessLoggerMiddleware() {
                 const timestamp = new Date().toISOString();
                 const log = `${timestamp} ${clientIp} ${userAgent}\n`;
 
-                fs.appendFile(logPath, log, (err) => {
-                    if (err) {
-                        console.error('Failed to write access log:', err);
-                    }
-                });
+                try {
+                    await fs.appendFile(logPath, log);
+                } catch (err) {
+                    console.error('Failed to write access log:', err);
+                }
             }
         }
 
         next();
-    };
+    });
 }

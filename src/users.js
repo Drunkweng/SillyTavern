@@ -1,6 +1,6 @@
 // Native Node Modules
 import path from 'node:path';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import process from 'node:process';
@@ -16,6 +16,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import sanitize from 'sanitize-filename';
 
 import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, SETTINGS_FILE, UPLOADS_DIRECTORY } from './constants.js';
+export { DEFAULT_USER };
 import { getConfigValue, color, delay, generateTimestamp } from './util.js';
 import { readSecret, writeSecret } from './endpoints/secrets.js';
 import { getContentOfType } from './endpoints/content-manager.js';
@@ -26,6 +27,7 @@ const AVATAR_PREFIX = 'avatar:';
 const ENABLE_ACCOUNTS = getConfigValue('enableUserAccounts', false, 'boolean');
 const AUTHELIA_AUTH = getConfigValue('autheliaAuth', false, 'boolean');
 const PER_USER_BASIC_AUTH = getConfigValue('perUserBasicAuth', false, 'boolean');
+const ENABLE_DATABASE_AUTH = getConfigValue('enableDatabaseAuth', false, 'boolean');
 const ANON_CSRF_SECRET = crypto.randomBytes(64).toString('base64');
 
 /**
@@ -107,8 +109,10 @@ const STORAGE_KEYS = {
  */
 export async function ensurePublicDirectoriesExist() {
     for (const dir of Object.values(PUBLIC_DIRECTORIES)) {
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+        try {
+            await fs.access(dir);
+        } catch {
+            await fs.mkdir(dir, { recursive: true });
         }
     }
 
@@ -116,8 +120,10 @@ export async function ensurePublicDirectoriesExist() {
     const directoriesList = userHandles.map(handle => getUserDirectories(handle));
     for (const userDirectories of directoriesList) {
         for (const dir of Object.values(userDirectories)) {
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
+            try {
+                await fs.access(dir);
+            } catch {
+                await fs.mkdir(dir, { recursive: true });
             }
         }
     }
@@ -156,20 +162,25 @@ export async function verifySecuritySettings() {
         logSecurityAlert('Your current SillyTavern configuration is insecure (listening to non-localhost). Enable whitelisting, basic authentication or user accounts.');
     }
 
-    const users = await getAllEnabledUsers();
-    const unprotectedUsers = users.filter(x => !x.password);
-    const unprotectedAdminUsers = unprotectedUsers.filter(x => x.admin);
+    // Skip password validation if database authentication is enabled
+    if (!ENABLE_DATABASE_AUTH) {
+        const users = await getAllEnabledUsers();
+        const unprotectedUsers = users.filter(x => !x.password);
+        const unprotectedAdminUsers = unprotectedUsers.filter(x => x.admin);
 
-    if (unprotectedUsers.length > 0) {
-        console.warn(color.blue('A friendly reminder that the following users are not password protected:'));
-        unprotectedUsers.map(x => `${color.yellow(x.handle)} ${color.red(x.admin ? '(admin)' : '')}`).forEach(x => console.warn(x));
-        console.log();
-        console.warn(`Consider setting a password in the admin panel or by using the ${color.blue('recover.js')} script.`);
-        console.log();
+        if (unprotectedUsers.length > 0) {
+            console.warn(color.blue('A friendly reminder that the following users are not password protected:'));
+            unprotectedUsers.map(x => `${color.yellow(x.handle)} ${color.red(x.admin ? '(admin)' : '')}`).forEach(x => console.warn(x));
+            console.log();
+            console.warn(`Consider setting a password in the admin panel or by using the ${color.blue('recover.js')} script.`);
+            console.log();
 
-        if (unprotectedAdminUsers.length > 0) {
-            logSecurityAlert('If you are not using basic authentication or whitelisting, you should set a password for all admin users.');
+            if (unprotectedAdminUsers.length > 0) {
+                logSecurityAlert('If you are not using basic authentication or whitelisting, you should set a password for all admin users.');
+            }
         }
+    } else {
+        console.log(color.green('Database authentication is enabled. Skipping local password validation.'));
     }
 
     if (basicAuthMode) {
@@ -190,22 +201,27 @@ export async function verifySecuritySettings() {
     }
 }
 
-export function cleanUploads() {
+export async function cleanUploads() {
     try {
         const uploadsPath = path.join(globalThis.DATA_ROOT, UPLOADS_DIRECTORY);
-        if (fs.existsSync(uploadsPath)) {
-            const uploads = fs.readdirSync(uploadsPath);
-
-            if (!uploads.length) {
-                return;
-            }
-
-            console.debug(`Cleaning uploads folder (${uploads.length} files)`);
-            uploads.forEach(file => {
-                const pathToFile = path.join(uploadsPath, file);
-                fs.unlinkSync(pathToFile);
-            });
+        try {
+            await fs.access(uploadsPath);
+        } catch {
+            return; // Directory doesn't exist
         }
+
+        const uploads = await fs.readdir(uploadsPath);
+
+        if (!uploads.length) {
+            return;
+        }
+
+        console.debug(`Cleaning uploads folder (${uploads.length} files)`);
+        const unlinkPromises = uploads.map(file => {
+            const pathToFile = path.join(uploadsPath, file);
+            return fs.unlink(pathToFile);
+        });
+        await Promise.all(unlinkPromises);
     } catch (err) {
         console.error(err);
     }
@@ -228,7 +244,9 @@ export async function migrateUserData() {
     const publicDirectory = path.join(process.cwd(), 'public');
 
     // No need to migrate if the characters directory doesn't exists
-    if (!fs.existsSync(path.join(publicDirectory, 'characters'))) {
+    try {
+        await fs.access(path.join(publicDirectory, 'characters'));
+    } catch {
         return;
     }
 
@@ -376,8 +394,10 @@ export async function migrateUserData() {
     const currentDate = new Date().toISOString().split('T')[0];
     const backupDirectory = path.join(process.cwd(), PUBLIC_DIRECTORIES.backups, '_migration', currentDate);
 
-    if (!fs.existsSync(backupDirectory)) {
-        fs.mkdirSync(backupDirectory, { recursive: true });
+    try {
+        await fs.access(backupDirectory);
+    } catch {
+        await fs.mkdir(backupDirectory, { recursive: true });
     }
 
     const errors = [];
@@ -386,31 +406,33 @@ export async function migrateUserData() {
         console.log(`Migrating ${migration.old} to ${migration.new}...`);
 
         try {
-            if (!fs.existsSync(migration.old)) {
+            try {
+                await fs.access(migration.old);
+            } catch {
                 console.log(color.yellow(`Skipping migration of ${migration.old} as it does not exist.`));
                 continue;
             }
 
             if (migration.file) {
                 // Copy the file to the new location
-                fs.cpSync(migration.old, migration.new, { force: true });
+                await fs.cp(migration.old, migration.new, { force: true });
                 // Move the file to the backup location
-                fs.cpSync(
+                await fs.cp(
                     migration.old,
                     path.join(backupDirectory, path.basename(migration.old)),
                     { recursive: true, force: true },
                 );
-                fs.rmSync(migration.old, { recursive: true, force: true });
+                await fs.rm(migration.old, { recursive: true, force: true });
             } else {
                 // Copy the directory to the new location
-                fs.cpSync(migration.old, migration.new, { recursive: true, force: true });
+                await fs.cp(migration.old, migration.new, { recursive: true, force: true });
                 // Move the directory to the backup location
-                fs.cpSync(
+                await fs.cp(
                     migration.old,
                     path.join(backupDirectory, path.basename(migration.old)),
                     { recursive: true, force: true },
                 );
-                fs.rmSync(migration.old, { recursive: true, force: true });
+                await fs.rm(migration.old, { recursive: true, force: true });
             }
         } catch (error) {
             console.error(color.red(`Error migrating ${migration.old} to ${migration.new}:`), error.message);
@@ -443,22 +465,34 @@ export async function migrateSystemPrompts() {
     for (const directory of directories) {
         try {
             const migrateMarker = path.join(directory.sysprompt, '.migrated');
-            if (fs.existsSync(migrateMarker)) {
+            try {
+                await fs.access(migrateMarker);
                 continue;
+            } catch {
+                // Marker doesn't exist, proceed with migration
             }
             const backupsPath = path.join(directory.backups, '_sysprompt');
-            fs.mkdirSync(backupsPath, { recursive: true });
+            await fs.mkdir(backupsPath, { recursive: true });
             const defaultPrompts = await getDefaultSystemPrompts();
-            const instucts = fs.readdirSync(directory.instruct);
+            const instucts = await fs.readdir(directory.instruct);
             let migratedPrompts = [];
             for (const instruct of instucts) {
                 const instructPath = path.join(directory.instruct, instruct);
                 const sysPromptPath = path.join(directory.sysprompt, instruct);
-                if (path.extname(instruct) === '.json' && !fs.existsSync(sysPromptPath)) {
-                    const instructData = JSON.parse(fs.readFileSync(instructPath, 'utf8'));
+
+                try {
+                    await fs.access(sysPromptPath);
+                    continue; // a file with the same name already exists in the destination
+                } catch {
+                    // file doesn't exist, can migrate
+                }
+
+                if (path.extname(instruct) === '.json') {
+                    const instructContent = await fs.readFile(instructPath, 'utf8');
+                    const instructData = JSON.parse(instructContent);
                     if ('system_prompt' in instructData && 'name' in instructData) {
                         const backupPath = path.join(backupsPath, `${instructData.name}.json`);
-                        fs.cpSync(instructPath, backupPath, { force: true });
+                        await fs.cp(instructPath, backupPath, { force: true });
                         const syspromptData = { name: instructData.name, content: instructData.system_prompt };
                         migratedPrompts.push(syspromptData);
                         delete instructData.system_prompt;
@@ -524,16 +558,18 @@ export async function initUserStorage(dataRoot) {
 /**
  * Get the cookie secret from the config. If it doesn't exist, generate a new one.
  * @param {string} dataRoot The root directory for user data
- * @returns {string} The cookie secret
+ * @returns {Promise<string>} The cookie secret
  */
-export function getCookieSecret(dataRoot) {
+export async function getCookieSecret(dataRoot) {
     const cookieSecretPath = path.join(dataRoot, COOKIE_SECRET_PATH);
 
-    if (fs.existsSync(cookieSecretPath)) {
-        const stat = fs.statSync(cookieSecretPath);
-        if (stat.size > 0) {
-            return fs.readFileSync(cookieSecretPath, 'utf8');
+    try {
+        const secret = await fs.readFile(cookieSecretPath, 'utf8');
+        if (secret) {
+            return secret;
         }
+    } catch {
+        // file doesn't exist or is empty, continue
     }
 
     const oldSecret = getConfigValue(STORAGE_KEYS.cookieSecret);
@@ -591,27 +627,32 @@ export function getSessionCookieAge() {
  * Hashes a password using scrypt with the provided salt.
  * @param {string} password Password to hash
  * @param {string} salt Salt to use for hashing
- * @returns {string} Hashed password
+ * @returns {Promise<string>} Hashed password
  */
 export function getPasswordHash(password, salt) {
-    return crypto.scryptSync(password.normalize(), salt, 64).toString('base64');
+    return new Promise((resolve, reject) => {
+        crypto.scrypt(password.normalize(), salt, 64, (err, derivedKey) => {
+            if (err) reject(err);
+            resolve(derivedKey.toString('base64'));
+        });
+    });
 }
 
 /**
  * Get the CSRF secret from the storage.
  * @param {import('express').Request} [request] HTTP request object
- * @returns {string} The CSRF secret
+ * @returns {Promise<string>} The CSRF secret
  */
-export function getCsrfSecret(request) {
+export async function getCsrfSecret(request) {
     if (!request || !request.user) {
         return ANON_CSRF_SECRET;
     }
 
-    let csrfSecret = readSecret(request.user.directories, STORAGE_KEYS.csrfSecret);
+    let csrfSecret = await readSecret(request.user.directories, STORAGE_KEYS.csrfSecret);
 
     if (!csrfSecret) {
         csrfSecret = crypto.randomBytes(64).toString('base64');
-        writeSecret(request.user.directories, STORAGE_KEYS.csrfSecret, csrfSecret);
+        await writeSecret(request.user.directories, STORAGE_KEYS.csrfSecret, csrfSecret);
     }
 
     return csrfSecret;
@@ -666,17 +707,28 @@ export async function getUserAvatar(handle) {
         // Fallback to reading from files if custom avatar is not set
         const directory = getUserDirectories(handle);
         const pathToSettings = path.join(directory.root, SETTINGS_FILE);
-        const settings = fs.existsSync(pathToSettings) ? JSON.parse(fs.readFileSync(pathToSettings, 'utf8')) : {};
+        let settings = {};
+        try {
+            const settingsContent = await fs.readFile(pathToSettings, 'utf8');
+            settings = JSON.parse(settingsContent);
+        } catch {
+            // settings file doesn't exist or is invalid
+        }
+
         const avatarFile = settings?.power_user?.default_persona || settings?.user_avatar;
         if (!avatarFile) {
             return PUBLIC_USER_AVATAR;
         }
         const avatarPath = path.join(directory.avatars, sanitize(avatarFile));
-        if (!fs.existsSync(avatarPath)) {
+
+        try {
+            await fs.access(avatarPath);
+        } catch {
             return PUBLIC_USER_AVATAR;
         }
+
         const mimeType = mime.lookup(avatarPath);
-        const base64Content = fs.readFileSync(avatarPath, 'base64');
+        const base64Content = await fs.readFile(avatarPath, 'base64');
         return `data:${mimeType};base64,${base64Content}`;
     }
     catch {
@@ -804,7 +856,7 @@ async function basicUserLogin(request) {
         if (username === userHandle) {
             const user = await storage.getItem(toKey(userHandle));
             // Verify pass again here just to be sure
-            if (user && user.enabled && user.password && user.password === getPasswordHash(password, user.salt)) {
+            if (user && user.enabled && user.password && user.password === await getPasswordHash(password, user.salt)) {
                 request.session.handle = userHandle;
                 return true;
             }
@@ -921,11 +973,12 @@ function createRouteHandler(directoryFn) {
         try {
             const directory = directoryFn(req);
             const filePath = decodeURIComponent(req.params[0]);
-            const exists = fs.existsSync(path.join(directory, filePath));
-            if (!exists) {
+            try {
+                await fs.access(path.join(directory, filePath));
+                return res.sendFile(filePath, { root: directory });
+            } catch {
                 return res.sendStatus(404);
             }
-            return res.sendFile(filePath, { root: directory });
         } catch (error) {
             return res.sendStatus(500);
         }
@@ -943,17 +996,19 @@ function createExtensionsRouteHandler(directoryFn) {
             const directory = directoryFn(req);
             const filePath = decodeURIComponent(req.params[0]);
 
-            const existsLocal = fs.existsSync(path.join(directory, filePath));
-            if (existsLocal) {
+            try {
+                await fs.access(path.join(directory, filePath));
                 return res.sendFile(filePath, { root: directory });
+            } catch {
+                // Not found in user's directory, check global
             }
 
-            const existsGlobal = fs.existsSync(path.join(PUBLIC_DIRECTORIES.globalExtensions, filePath));
-            if (existsGlobal) {
+            try {
+                await fs.access(path.join(PUBLIC_DIRECTORIES.globalExtensions, filePath));
                 return res.sendFile(filePath, { root: PUBLIC_DIRECTORIES.globalExtensions });
+            } catch {
+                return res.sendStatus(404);
             }
-
-            return res.sendStatus(404);
         } catch (error) {
             return res.sendStatus(500);
         }

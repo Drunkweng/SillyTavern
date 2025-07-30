@@ -4,14 +4,15 @@
  */
 import { Buffer } from 'node:buffer';
 import storage from 'node-persist';
+import { promises as fs } from 'node:fs';
 import { getAllUserHandles, toKey, getPasswordHash } from '../users.js';
-import { getConfigValue, safeReadFileSync } from '../util.js';
+import { getConfigValue } from '../util.js';
 
 const PER_USER_BASIC_AUTH = getConfigValue('perUserBasicAuth', false, 'boolean');
 const ENABLE_ACCOUNTS = getConfigValue('enableUserAccounts', false, 'boolean');
 
 const basicAuthMiddleware = async function (request, response, callback) {
-    const unauthorizedWebpage = safeReadFileSync('./public/error/unauthorized.html') ?? '';
+    const unauthorizedWebpage = await fs.readFile('./public/error/unauthorized.html', 'utf-8').catch(() => '');
     const unauthorizedResponse = (res) => {
         res.set('WWW-Authenticate', 'Basic realm="SillyTavern", charset="UTF-8"');
         return res.status(401).send(unauthorizedWebpage);
@@ -43,7 +44,7 @@ const basicAuthMiddleware = async function (request, response, callback) {
         for (const userHandle of userHandles) {
             if (username === userHandle) {
                 const user = await storage.getItem(toKey(userHandle));
-                if (user && user.enabled && (user.password && user.password === getPasswordHash(password, user.salt))) {
+                if (user && user.enabled && (user.password && user.password === await getPasswordHash(password, user.salt))) {
                     return callback();
                 }
             }

@@ -685,11 +685,16 @@ async function openUserProfile() {
         await getCurrentUser();
         template.find('.userName').text(currentUser.name);
     }));
-    template.find('.userChangePasswordButton').on('click', () => changePassword(currentUser.handle, async () => {
-        await getCurrentUser();
-        template.find('.hasPassword').toggle(currentUser.password);
-        template.find('.noPassword').toggle(!currentUser.password);
-    }));
+    const changePasswordButton = template.find('.userChangePasswordButton');
+    if (currentUser.enableDatabaseAuth) {
+        changePasswordButton.hide();
+    } else {
+        changePasswordButton.on('click', () => changePassword(currentUser.handle, async () => {
+            await getCurrentUser();
+            template.find('.hasPassword').toggle(currentUser.password);
+            template.find('.noPassword').toggle(!currentUser.password);
+        }));
+    }
     template.find('.userBackupButton').on('click', function () {
         $(this).addClass('disabled');
         backupUserData(currentUser.handle, () => {

@@ -2,10 +2,11 @@ import fetch from 'node-fetch';
 import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
+import { asyncHandler } from '../util.js';
 
 export const router = express.Router();
 
-router.post('/caption-image', async (request, response) => {
+router.post('/caption-image', asyncHandler(async (request, response) => {
     try {
         const mimeType = request.body.image.split(';')[0].split(':')[1];
         const base64Data = request.body.image.split(',')[1];
@@ -39,7 +40,7 @@ router.post('/caption-image', async (request, response) => {
             headers: {
                 'Content-Type': 'application/json',
                 'anthropic-version': '2023-06-01',
-                'x-api-key': request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE),
+                'x-api-key': request.body.reverse_proxy ? request.body.proxy_password : await readSecret(request.user.directories, SECRET_KEYS.CLAUDE),
             },
         });
 
@@ -63,4 +64,4 @@ router.post('/caption-image', async (request, response) => {
         console.error(error);
         response.status(500).send('Internal server error');
     }
-});
+}));

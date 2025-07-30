@@ -14,6 +14,34 @@
         body {
             background-color: rgb(36, 36, 37);
         }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #fff;
+            width: 20px;
+            height: 20px;
+            -webkit-animation: spin 1s linear infinite; /* Safari */
+            animation: spin 1s linear infinite;
+            display: none; /* Hidden by default */
+        }
+
+        /* Safari */
+        @-webkit-keyframes spin {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #loginButton {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 34px; /* to avoid size change */
+        }
     </style>
     <link rel="preload" as="style" href="style.css">
     <link rel="apple-touch-icon" sizes="57x57" href="img/apple-icon-57x57.png" />
@@ -58,24 +86,18 @@
                             <div id="passwordEntryBlock" style="display:none;"
                                 class="flex-container flexFlowColumn alignItemsCenter">
                                 <input id="userPassword" class="text_pole" type="password" placeholder="Password" autocomplete="current-password">
-                                <a id="recoverPassword" href="#" onclick="return false;">Forgot password?</a>
                                 <div class="flex-container">
-                                    <div id="loginButton" class="menu_button">Login</div>
-                                </div>
-                            </div>
-                            <div id="passwordRecoveryBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
-                                <div id="recoverMessage">
-                                    Recovery code has been posted to the server console.
-                                </div>
-                                <input id="recoveryCode" class="text_pole" type="text" placeholder="Recovery code">
-                                <input id="newPassword" class="text_pole" type="password" placeholder="New password" autocomplete="new-password">
-                                <div class="flex-container flexGap10">
-                                    <div id="sendRecovery" class="menu_button">Send</div>
-                                    <div id="cancelRecovery" class="menu_button">Cancel</div>
+                                    <div id="loginButton" class="menu_button">
+                                       <span class="login-text">Login</span>
+                                       <div class="spinner"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                         <div class="neutral_warning" id="errorMessage">
+                        </div>
+                        <div class="neutral_warning" id="login_hint">
+                            请使用LinkAPI账号(用户名)登录，<a href="https://linkapi.cc/register" target="_blank">点我注册免费使用</a>
                         </div>
                     </div>
                 </div>

@@ -1,11 +1,12 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import { CheckRepoActions, default as simpleGit } from 'simple-git';
 
 import { PUBLIC_DIRECTORIES } from '../constants.js';
+import { asyncHandler } from '../util.js';
 
 /**
  * This function extracts the extension information from the manifest file.
@@ -16,11 +17,14 @@ async function getManifest(extensionPath) {
     const manifestPath = path.join(extensionPath, 'manifest.json');
 
     // Check if manifest.json exists
-    if (!fs.existsSync(manifestPath)) {
+    try {
+        await fs.access(manifestPath);
+    } catch {
         throw new Error(`Manifest file not found at ${manifestPath}`);
     }
 
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const manifestContent = await fs.readFile(manifestPath, 'utf8');
+    const manifest = JSON.parse(manifestContent);
     return manifest;
 }
 
@@ -65,7 +69,7 @@ export const router = express.Router();
  *
  * @returns {void}
  */
-router.post('/install', async (request, response) => {
+router.post('/install', asyncHandler(async (request, response) => {
     if (!request.body.url) {
         return response.status(400).send('Bad Request: URL is required in the request body.');
     }
@@ -74,12 +78,16 @@ router.post('/install', async (request, response) => {
         const git = simpleGit();
 
         // make sure the third-party directory exists
-        if (!fs.existsSync(path.join(request.user.directories.extensions))) {
-            fs.mkdirSync(path.join(request.user.directories.extensions));
+        try {
+            await fs.access(path.join(request.user.directories.extensions));
+        } catch {
+            await fs.mkdir(path.join(request.user.directories.extensions));
         }
 
-        if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-            fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+        try {
+            await fs.access(PUBLIC_DIRECTORIES.globalExtensions);
+        } catch {
+            await fs.mkdir(PUBLIC_DIRECTORIES.globalExtensions);
         }
 
         const { url, global, branch } = request.body;
@@ -92,8 +100,11 @@ router.post('/install', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(path.basename(url, '.git')));
 
-        if (fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
             return response.status(409).send(`Directory already exists at ${extensionPath}`);
+        } catch {
+            // Directory does not exist, which is what we want
         }
 
         const cloneOptions = { '--depth': 1 };
@@ -110,7 +121,7 @@ router.post('/install', async (request, response) => {
         console.error('Importing custom content failed', error);
         return response.status(500).send(`Server Error: ${error.message}`);
     }
-});
+}));
 
 /**
  * HTTP POST handler function to pull the latest updates from a git repository
@@ -123,7 +134,7 @@ router.post('/install', async (request, response) => {
  *
  * @returns {void}
  */
-router.post('/update', async (request, response) => {
+router.post('/update', asyncHandler(async (request, response) => {
     if (!request.body.extensionName) {
         return response.status(400).send('Bad Request: extensionName is required in the request body.');
     }
@@ -139,7 +150,9 @@ router.post('/update', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(extensionName));
 
-        if (!fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
+        } catch {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
@@ -165,9 +178,9 @@ router.post('/update', async (request, response) => {
         console.error('Updating extension failed', error);
         return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
-});
+}));
 
-router.post('/branches', async (request, response) => {
+router.post('/branches', asyncHandler(async (request, response) => {
     try {
         const { extensionName, global } = request.body;
 
@@ -183,7 +196,9 @@ router.post('/branches', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(extensionName));
 
-        if (!fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
+        } catch {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
@@ -210,9 +225,9 @@ router.post('/branches', async (request, response) => {
         console.error('Getting branches failed', error);
         return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
-});
+}));
 
-router.post('/switch', async (request, response) => {
+router.post('/switch', asyncHandler(async (request, response) => {
     try {
         const { extensionName, branch, global } = request.body;
 
@@ -228,7 +243,9 @@ router.post('/switch', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(extensionName));
 
-        if (!fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
+        } catch {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
@@ -269,9 +286,9 @@ router.post('/switch', async (request, response) => {
         console.error('Switching branches failed', error);
         return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
-});
+}));
 
-router.post('/move', async (request, response) => {
+router.post('/move', asyncHandler(async (request, response) => {
     try {
         const { extensionName, source, destination } = request.body;
 
@@ -289,14 +306,22 @@ router.post('/move', async (request, response) => {
         const sourcePath = path.join(sourceDirectory, sanitize(extensionName));
         const destinationPath = path.join(destinationDirectory, sanitize(extensionName));
 
-        if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
+        try {
+            const stats = await fs.stat(sourcePath);
+            if (!stats.isDirectory()) {
+                throw new Error('Source is not a directory');
+            }
+        } catch {
             console.error(`Source directory does not exist at ${sourcePath}`);
             return response.status(404).send('Source directory does not exist.');
         }
 
-        if (fs.existsSync(destinationPath)) {
+        try {
+            await fs.access(destinationPath);
             console.error(`Destination directory already exists at ${destinationPath}`);
             return response.status(409).send('Destination directory already exists.');
+        } catch {
+            // Destination does not exist, which is what we want
         }
 
         if (source === destination) {
@@ -304,8 +329,8 @@ router.post('/move', async (request, response) => {
             return response.status(409).send('Source and destination directories are the same.');
         }
 
-        fs.cpSync(sourcePath, destinationPath, { recursive: true, force: true });
-        fs.rmSync(sourcePath, { recursive: true, force: true });
+        await fs.cp(sourcePath, destinationPath, { recursive: true, force: true });
+        await fs.rm(sourcePath, { recursive: true, force: true });
         console.info(`Extension has been moved from ${sourcePath} to ${destinationPath}`);
 
         return response.sendStatus(204);
@@ -313,7 +338,7 @@ router.post('/move', async (request, response) => {
         console.error('Moving extension failed', error);
         return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
-});
+}));
 
 /**
  * HTTP POST handler function to get the current git commit hash and branch name for a given extension.
@@ -325,7 +350,7 @@ router.post('/move', async (request, response) => {
  *
  * @returns {void}
  */
-router.post('/version', async (request, response) => {
+router.post('/version', asyncHandler(async (request, response) => {
     if (!request.body.extensionName) {
         return response.status(400).send('Bad Request: extensionName is required in the request body.');
     }
@@ -335,7 +360,9 @@ router.post('/version', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(extensionName));
 
-        if (!fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
+        } catch {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
@@ -366,7 +393,7 @@ router.post('/version', async (request, response) => {
         console.error('Getting extension version failed', error);
         return response.status(500).send(`Server Error: ${error.message}`);
     }
-});
+}));
 
 /**
  * HTTP POST handler function to delete a git repository based on the extension name provided in the request body.
@@ -376,7 +403,7 @@ router.post('/version', async (request, response) => {
  *
  * @returns {void}
  */
-router.post('/delete', async (request, response) => {
+router.post('/delete', asyncHandler(async (request, response) => {
     if (!request.body.extensionName) {
         return response.status(400).send('Bad Request: extensionName is required in the request body.');
     }
@@ -392,11 +419,13 @@ router.post('/delete', async (request, response) => {
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
         const extensionPath = path.join(basePath, sanitize(extensionName));
 
-        if (!fs.existsSync(extensionPath)) {
+        try {
+            await fs.access(extensionPath);
+        } catch {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
-        await fs.promises.rm(extensionPath, { recursive: true });
+        await fs.rm(extensionPath, { recursive: true });
         console.info(`Extension has been deleted at ${extensionPath}`);
 
         return response.send(`Extension has been deleted at ${extensionPath}`);
@@ -405,40 +434,41 @@ router.post('/delete', async (request, response) => {
         console.error('Deleting custom content failed', error);
         return response.status(500).send(`Server Error: ${error.message}`);
     }
-});
+}));
 
 /**
  * Discover the extension folders
  * If the folder is called third-party, search for subfolders instead
  */
-router.get('/discover', function (request, response) {
-    if (!fs.existsSync(path.join(request.user.directories.extensions))) {
-        fs.mkdirSync(path.join(request.user.directories.extensions));
+router.get('/discover', asyncHandler(async function (request, response) {
+    try {
+        await fs.access(path.join(request.user.directories.extensions));
+    } catch {
+        await fs.mkdir(path.join(request.user.directories.extensions));
     }
 
-    if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-        fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+    try {
+        await fs.access(PUBLIC_DIRECTORIES.globalExtensions);
+    } catch {
+        await fs.mkdir(PUBLIC_DIRECTORIES.globalExtensions);
     }
 
     // Get all folders in system extensions folder, excluding third-party
-    const builtInExtensions = fs
-        .readdirSync(PUBLIC_DIRECTORIES.extensions)
-        .filter(f => fs.statSync(path.join(PUBLIC_DIRECTORIES.extensions, f)).isDirectory())
-        .filter(f => f !== 'third-party')
-        .map(f => ({ type: 'system', name: f }));
+    const builtInExtensions = (await fs.readdir(PUBLIC_DIRECTORIES.extensions, { withFileTypes: true }))
+        .filter(f => f.isDirectory())
+        .filter(f => f.name !== 'third-party')
+        .map(f => ({ type: 'system', name: f.name }));
 
     // Get all folders in local extensions folder
-    const userExtensions = fs
-        .readdirSync(path.join(request.user.directories.extensions))
-        .filter(f => fs.statSync(path.join(request.user.directories.extensions, f)).isDirectory())
-        .map(f => ({ type: 'local', name: `third-party/${f}` }));
+    const userExtensions = (await fs.readdir(path.join(request.user.directories.extensions), { withFileTypes: true }))
+        .filter(f => f.isDirectory())
+        .map(f => ({ type: 'local', name: `third-party/${f.name}` }));
 
     // Get all folders in global extensions folder
     // In case of a conflict, the extension will be loaded from the user folder
-    const globalExtensions = fs
-        .readdirSync(PUBLIC_DIRECTORIES.globalExtensions)
-        .filter(f => fs.statSync(path.join(PUBLIC_DIRECTORIES.globalExtensions, f)).isDirectory())
-        .map(f => ({ type: 'global', name: `third-party/${f}` }))
+    const globalExtensions = (await fs.readdir(PUBLIC_DIRECTORIES.globalExtensions, { withFileTypes: true }))
+        .filter(f => f.isDirectory())
+        .map(f => ({ type: 'global', name: `third-party/${f.name}` }))
         .filter(f => !userExtensions.some(e => e.name === f.name));
 
     // Combine all extensions
@@ -446,4 +476,4 @@ router.get('/discover', function (request, response) {
     console.debug('Extensions available for', request.user.profile.handle, allExtensions);
 
     return response.send(allExtensions);
-});
+}));

@@ -1,14 +1,12 @@
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 import express from 'express';
 import writeFileAtomic from 'write-file-atomic';
 
-const readFile = fs.promises.readFile;
-const readdir = fs.promises.readdir;
-
 import { getAllUserHandles, getUserDirectories } from '../users.js';
+import { asyncHandler } from '../util.js';
 
 const STATS_FILE = 'stats.json';
 
@@ -122,12 +120,12 @@ function timestampToMoment(timestamp) {
  * @returns {Promise<Object>} The aggregated stats object.
  */
 async function collectAndCreateStats(chatsPath, charactersPath) {
-    const files = await readdir(charactersPath);
+    const files = await fs.readdir(charactersPath);
 
     const pngFiles = files.filter((file) => file.endsWith('.png'));
 
-    let processingPromises = pngFiles.map((file) =>
-        calculateStats(chatsPath, file),
+    let processingPromises = pngFiles.map(async (file) =>
+        await calculateStats(chatsPath, file),
     );
     const statsArr = await Promise.all(processingPromises);
 
@@ -164,7 +162,7 @@ export async function init() {
             const directories = getUserDirectories(handle);
             try {
                 const statsFilePath = path.join(directories.root, STATS_FILE);
-                const statsFileContent = await readFile(statsFilePath, 'utf-8');
+                const statsFileContent = await fs.readFile(statsFilePath, 'utf-8');
                 STATS.set(handle, JSON.parse(statsFileContent));
             } catch (err) {
                 // If the file doesn't exist or is invalid, initialize stats
@@ -221,12 +219,12 @@ export async function onExit() {
  * Reads the contents of a file and returns the lines in the file as an array.
  *
  * @param {string} filepath - The path of the file to be read.
- * @returns {Array<string>} - The lines in the file.
+ * @returns {Promise<Array<string>>} - The lines in the file.
  * @throws Will throw an error if the file cannot be read.
  */
-function readAndParseFile(filepath) {
+async function readAndParseFile(filepath) {
     try {
-        let file = fs.readFileSync(filepath, 'utf8');
+        let file = await fs.readFile(filepath, 'utf8');
         let lines = file.split('\n');
         return lines;
     } catch (error) {
@@ -264,9 +262,9 @@ function countWordsInString(str) {
  *
  * @param  {string} chatsPath The directory containing the chat files.
  * @param  {string} item     The name of the character.
- * @return {object}          An object containing the calculated statistics.
+ * @return {Promise<object>}          An object containing the calculated statistics.
  */
-const calculateStats = (chatsPath, item) => {
+const calculateStats = async (chatsPath, item) => {
     const chatDir = path.join(chatsPath, item.replace('.png', ''));
     const stats = {
         total_gen_time: 0,
@@ -281,11 +279,12 @@ const calculateStats = (chatsPath, item) => {
     };
     let uniqueGenStartTimes = new Set();
 
-    if (fs.existsSync(chatDir)) {
-        const chats = fs.readdirSync(chatDir);
+    try {
+        await fs.access(chatDir);
+        const chats = await fs.readdir(chatDir);
         if (Array.isArray(chats) && chats.length) {
             for (const chat of chats) {
-                const result = calculateTotalGenTimeAndWordCount(
+                const result = await calculateTotalGenTimeAndWordCount(
                     chatDir,
                     chat,
                     uniqueGenStartTimes,
@@ -297,7 +296,7 @@ const calculateStats = (chatsPath, item) => {
                 stats.non_user_msg_count += result.nonUserMsgCount || 0;
                 stats.total_swipe_count += result.totalSwipeCount || 0;
 
-                const chatStat = fs.statSync(path.join(chatDir, chat));
+                const chatStat = await fs.stat(path.join(chatDir, chat));
                 stats.chat_size += chatStat.size;
                 stats.date_last_chat = Math.max(
                     stats.date_last_chat,
@@ -309,6 +308,8 @@ const calculateStats = (chatsPath, item) => {
                 );
             }
         }
+    } catch {
+        // ignore
     }
 
     return { [item]: stats };
@@ -329,16 +330,16 @@ function setCharStats(handle, stats) {
  *
  * @param {string} chatDir - The directory path where character chat files are stored.
  * @param {string} chat - The name of the chat file.
- * @returns {Object} - An object containing the total generation time, user word count, and non-user word count.
+ * @returns {Promise<Object>} - An object containing the total generation time, user word count, and non-user word count.
  * @throws Will throw an error if the file cannot be read or parsed.
  */
-function calculateTotalGenTimeAndWordCount(
+async function calculateTotalGenTimeAndWordCount(
     chatDir,
     chat,
     uniqueGenStartTimes,
 ) {
     let filepath = path.join(chatDir, chat);
-    let lines = readAndParseFile(filepath);
+    let lines = await readAndParseFile(filepath);
 
     let totalGenTime = 0;
     let userWordCount = 0;
@@ -439,29 +440,24 @@ export const router = express.Router();
 /**
  * Handle a POST request to get the stats object
  */
-router.post('/get', function (request, response) {
+router.post('/get', asyncHandler(async function (request, response) {
     const stats = STATS.get(request.user.profile.handle) || {};
     response.send(stats);
-});
+}));
 
 /**
  * Triggers the recreation of statistics from chat files.
  */
-router.post('/recreate', async function (request, response) {
-    try {
-        await recreateStats(request.user.profile.handle, request.user.directories.chats, request.user.directories.characters);
-        return response.sendStatus(200);
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
+router.post('/recreate', asyncHandler(async function (request, response) {
+    await recreateStats(request.user.profile.handle, request.user.directories.chats, request.user.directories.characters);
+    return response.sendStatus(200);
+}));
 
 /**
  * Handle a POST request to update the stats object
 */
-router.post('/update', function (request, response) {
+router.post('/update', asyncHandler(async function (request, response) {
     if (!request.body) return response.sendStatus(400);
     setCharStats(request.user.profile.handle, request.body);
     return response.sendStatus(200);
-});
+}));

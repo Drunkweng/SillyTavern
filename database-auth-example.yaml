@@ -1,0 +1,64 @@
+# SillyTavern 数据库认证配置示例
+# 此文件展示了如何配置 SillyTavern 以使用外部 MySQL 数据库进行用户认证
+
+# -- 数据库配置 --
+database:
+  host: "localhost"          # 数据库服务器地址
+  user: "sillytavern"         # 数据库用户名
+  password: "yourpassword"    # 数据库密码
+  database: "sillytavern"     # 数据库名称
+  port: 3306                 # 数据库端口（默认为3306）
+
+# -- 安全配置 --
+# 启用用户账户系统
+enableUserAccounts: true
+
+# 启用数据库认证模式
+# 当设置为 true 时，系统将不会提示为本地管理员用户设置密码
+enableDatabaseAuth: true
+
+# 禁用 discreet 登录模式（可选）
+enableDiscreetLogin: false
+
+# 禁用 Authelia 认证（如果不需要）
+autheliaAuth: false
+
+# 禁用每用户基本认证（如果不需要）
+perUserBasicAuth: false
+
+# -- 服务器配置 --
+# 根据需要调整其他服务器设置
+listen: false
+port: 8000
+
+# -- 数据库表结构示例 --
+/*
+  在您的 MySQL 数据库中，您需要创建一个 users 表，结构如下：
+
+  CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    role INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  );
+
+  其中：
+  - username: 用户名（与 SillyTavern 中的用户句柄对应）
+  - password: 使用 bcrypt 哈希的密码
+  - role: 用户角色（0=普通用户，100=管理员）
+*/
+
+# -- 使用说明 --
+# 1. 将此配置复制到您的 config.yaml 文件中
+# 2. 根据您的实际数据库设置修改数据库连接参数
+# 3. 确保数据库中存在具有适当角色的用户记录
+# 4. 重启 SillyTavern 服务器
+
+# -- 故障排除 --
+# 如果遇到连接问题，请检查：
+# - 数据库服务器是否正在运行
+# - 数据库用户是否有足够的权限
+# - 防火墙设置是否允许连接
+# - 数据库表结构是否正确

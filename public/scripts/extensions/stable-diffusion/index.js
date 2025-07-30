@@ -317,7 +317,7 @@ const defaultSettings = {
     styles: defaultStyles,
 
     // ComyUI settings
-    comfy_url: 'http://127.0.0.1:8188',
+    comfy_url: '',
     comfy_workflow: 'Default_Comfy_Workflow.json',
 
     // Pollinations settings

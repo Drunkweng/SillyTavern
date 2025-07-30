@@ -1,12 +1,13 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 
 import express from 'express';
+// @ts-ignore
 import sanitize from 'sanitize-filename';
 import { Jimp } from '../jimp.js';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import writeFileAtomic from 'write-file-atomic';
 
-import { getImages, tryParse } from '../util.js';
+import { getImages, tryParse, asyncHandler } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { applyAvatarCropResize } from './characters.js';
 import { invalidateThumbnail } from './thumbnails.js';
@@ -14,32 +15,47 @@ import cacheBuster from '../middleware/cacheBuster.js';
 
 export const router = express.Router();
 
-router.post('/get', function (request, response) {
-    const images = getImages(request.user.directories.avatars);
+router.post('/get', asyncHandler(async function (request, response) {
+    const images = await getImages(request.user.directories.avatars);
     response.send(images);
-});
+}));
 
-router.post('/delete', getFileNameValidationFunction('avatar'), function (request, response) {
-    if (!request.body) return response.sendStatus(400);
+router.post('/delete', getFileNameValidationFunction('avatar'), asyncHandler(async function (request, response) {
+    if (!request.body) {
+        response.sendStatus(400);
+        return;
+    }
 
     if (request.body.avatar !== sanitize(request.body.avatar)) {
         console.error('Malicious avatar name prevented');
-        return response.sendStatus(403);
+        response.sendStatus(403);
+        return;
     }
 
     const fileName = path.join(request.user.directories.avatars, sanitize(request.body.avatar));
 
-    if (fs.existsSync(fileName)) {
-        fs.unlinkSync(fileName);
-        invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.avatar));
-        return response.send({ result: 'ok' });
+    try {
+        await fs.access(fileName);
+        await fs.unlink(fileName);
+        await invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.avatar));
+        response.send({ result: 'ok' });
+        return;
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            response.sendStatus(404);
+            return;
+        }
+        console.error(err);
+        response.sendStatus(500);
+        return;
     }
+}));
 
-    return response.sendStatus(404);
-});
-
-router.post('/upload', getFileNameValidationFunction('overwrite_name'), async (request, response) => {
-    if (!request.file) return response.sendStatus(400);
+router.post('/upload', getFileNameValidationFunction('overwrite_name'), asyncHandler(async (request, response) => {
+    if (!request.file) {
+        response.sendStatus(400);
+        return;
+    }
 
     try {
         const pathToUpload = path.join(request.file.destination, request.file.filename);
@@ -49,17 +65,17 @@ router.post('/upload', getFileNameValidationFunction('overwrite_name'), async (r
 
         // Remove previous thumbnail and bust cache if overwriting
         if (request.body.overwrite_name) {
-            invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.overwrite_name));
+            await invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.overwrite_name));
             cacheBuster.bust(request, response);
         }
 
         const filename = sanitize(request.body.overwrite_name || `${Date.now()}.png`);
         const pathToNewFile = path.join(request.user.directories.avatars, filename);
-        writeFileAtomicSync(pathToNewFile, image);
-        fs.unlinkSync(pathToUpload);
-        return response.send({ path: filename });
+        await writeFileAtomic(pathToNewFile, image);
+        await fs.unlink(pathToUpload);
+        response.send({ path: filename });
     } catch (err) {
         console.error('Error uploading user avatar:', err);
-        return response.status(400).send('Is not a valid image');
+        response.status(400).send('Is not a valid image');
     }
-});
+}));

@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import yaml from 'yaml';
 import storage from 'node-persist';
 import {
@@ -13,7 +13,8 @@ import {
  * @param {string} configPath - The path to the config file.
  */
 async function initStorage(configPath) {
-    const config = yaml.parse(fs.readFileSync(configPath, 'utf8'));
+    const configContent = await fs.readFile(configPath, 'utf8');
+    const config = yaml.parse(configContent);
     const dataRoot = config.dataRoot;
 
     if (!dataRoot) {
@@ -50,8 +51,8 @@ export async function recoverPassword(configPath, userAccount, userPassword) {
 
     if (userPassword) {
         console.log('Setting new password...');
-        const salt = getPasswordSalt();
-        const passwordHash = getPasswordHash(userPassword, salt);
+        const salt = await getPasswordSalt();
+        const passwordHash = await getPasswordHash(userPassword, salt);
         user.password = passwordHash;
         user.salt = salt;
     } else {

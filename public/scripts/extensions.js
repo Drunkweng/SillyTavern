@@ -1,9 +1,23 @@
+/**
+ * @typedef {object} Toastr
+ * @property {function(string, string=, object=)
+: HTMLElement} info
+ * @property {function(string, string=, object=): HTMLElement} success
+ * @property {function(string, string=, object=): HTMLElement} warning
+ * @property {function(string, string=, object=): HTMLElement} error
+ * @property {function(HTMLElement=): void} clear
+ */
+
+/** @type {Toastr} */
+// @ts-ignore
+const toastr = window.toastr;
+
 import { DOMPurify, Popper } from '../lib.js';
 
 import { eventSource, event_types, saveSettings, saveSettingsDebounced, getRequestHeaders, animation_duration, CLIENT_VERSION } from '../script.js';
 import { showLoader } from './loader.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
-import { renderTemplate, renderTemplateAsync } from './templates.js';
+import { renderTemplateAsync } from './templates.js';
 import { delay, isSubsetOf, sanitizeSelector, setValueByPath, versionCompare } from './utils.js';
 import { getContext } from './st-context.js';
 import { isAdmin } from './user.js';
@@ -55,6 +69,9 @@ let connectedToApi = false;
  */
 let manifests = {};
 
+// Extensions that must remain disabled for all users
+const ADMIN_BANNED_EXTENSIONS = ['caption', 'stable-diffusion', 'tts', 'translate'];
+
 /**
  * Default URL for the Extras API.
  */
@@ -99,20 +116,6 @@ export function saveMetadataDebounced() {
 }
 
 /**
- * Provides an ability for extensions to render HTML templates synchronously.
- * Templates sanitation and localization is forced.
- * @param {string} extensionName Extension name
- * @param {string} templateId Template ID
- * @param {object} templateData Additional data to pass to the template
- * @returns {string} Rendered HTML
- *
- * @deprecated Use renderExtensionTemplateAsync instead.
- */
-export function renderExtensionTemplate(extensionName, templateId, templateData = {}, sanitize = true, localize = true) {
-    return renderTemplate(`scripts/extensions/${extensionName}/${templateId}.html`, templateData, sanitize, localize, true);
-}
-
-/**
  * Provides an ability for extensions to render HTML templates asynchronously.
  * Templates sanitation and localization is forced.
  * @param {string} extensionName Extension name
@@ -154,7 +157,7 @@ export const extension_settings = {
     apiKey: '',
     autoConnect: false,
     notifyUpdates: false,
-    disabledExtensions: [],
+    disabledExtensions: ['caption', 'stable-diffusion', 'tts', 'translate'],
     expressionOverrides: [],
     memory: {},
     note: {
@@ -325,6 +328,10 @@ function onEnableExtensionClick() {
  * @param {boolean} [reload=true] If true, reload the page after enabling the extension
  */
 export async function enableExtension(name, reload = true) {
+    if (ADMIN_BANNED_EXTENSIONS.includes(name)) {
+        toastr.error(t`You don't have permission to enable this extension.`);
+        return;
+    }
     extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(x => x !== name);
     stateChanged = true;
     await saveSettings();
@@ -732,9 +739,16 @@ function generateExtensionHtml(name, manifest, isActive, isDisabled, isExternal,
         originHtml = '<a>';
     }
 
-    let toggleElement = isActive || isDisabled ?
-        '<input type="checkbox" title="' + t`Click to toggle` + `" data-name="${name}" class="${isActive ? 'toggle_disable' : 'toggle_enable'} ${checkboxClass}" ${isActive ? 'checked' : ''}>` :
-        `<input type="checkbox" title="Cannot enable extension" data-name="${name}" class="extension_missing ${checkboxClass}" disabled>`;
+    let toggleElement = '';
+    if (ADMIN_BANNED_EXTENSIONS.includes(name)) {
+        // Render a disabled toggle but keep full row layout
+        toggleElement = `<input type="checkbox" title="This extension is disabled by the administrator." data-name="${name}" class="extension_missing ${checkboxClass}" disabled>`;
+        isDisabled = true;
+    } else {
+        toggleElement = isActive || isDisabled ?
+            '<input type="checkbox" title="' + t`Click to toggle` + `" data-name="${name}" class="${isActive ? 'toggle_disable' : 'toggle_enable'} ${checkboxClass}" ${isActive ? 'checked' : ''}>` :
+            `<input type=\"checkbox\" title=\"Cannot enable extension\" data-name=\"${name}\" class=\"extension_missing ${checkboxClass}\" disabled>`;
+    }
 
     let deleteButton = isExternal ? `<button class="btn_delete menu_button" data-name="${externalId}" data-i18n="[title]Delete" title="Delete"><i class="fa-fw fa-solid fa-trash-can"></i></button>` : '';
     let updateButton = isExternal ? `<button class="btn_update menu_button displayNone" data-name="${externalId}" title="Update available"><i class="fa-solid fa-download fa-fw"></i></button>` : '';
@@ -1315,6 +1329,13 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
         Object.assign(extension_settings, settings.extension_settings);
     }
 
+    // Enforce administrator-banned extensions remain disabled
+    for (const banned of ADMIN_BANNED_EXTENSIONS) {
+        if (!extension_settings.disabledExtensions.includes(banned)) {
+            extension_settings.disabledExtensions.push(banned);
+        }
+    }
+
     $('#extensions_url').val(extension_settings.apiUrl);
     $('#extensions_api_key').val(extension_settings.apiKey);
     $('#extensions_autoconnect').prop('checked', extension_settings.autoConnect);
@@ -1401,7 +1422,9 @@ async function checkForUpdatesManual(sortFn, abortSignal) {
                     if (originLink) {
                         try {
                             const url = new URL(origin);
-                            if (!['https:', 'http:'].includes(url.protocol)) {
+                            if (
+!['https:', 'http:'].includes(url.protocol)
+) {
                                 throw new Error('Invalid protocol');
                             }
                             originLink.href = url.href;

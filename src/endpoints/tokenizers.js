@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import zlib from 'node:zlib';
@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 
 import express from 'express';
 import fetch from 'node-fetch';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import writeFileAtomic from 'write-file-atomic';
 
 import { Tokenizer } from '@agnai/web-tokenizers';
 import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
@@ -15,7 +15,7 @@ import tiktoken from 'tiktoken';
 import { convertClaudePrompt } from '../prompt-converters.js';
 import { TEXTGEN_TYPES } from '../constants.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
-import { getConfigValue, isValidUrl } from '../util.js';
+import { getConfigValue, isValidUrl, asyncHandler } from '../util.js';
 
 /**
  * @typedef { (req: import('express').Request, res: import('express').Response) => Promise<any> } TokenizationHandler
@@ -75,7 +75,9 @@ async function getPathToTokenizer(model, fallbackModel) {
     try {
         const url = new URL(model);
 
-        if (!['https:', 'http:'].includes(url.protocol)) {
+        if (
+!['https:', 'http:'].includes(url.protocol)
+) {
             throw new Error('Invalid URL protocol');
         }
 
@@ -86,29 +88,37 @@ async function getPathToTokenizer(model, fallbackModel) {
         }
 
         const CACHE_PATH = path.join(globalThis.DATA_ROOT, '_cache');
-        if (!fs.existsSync(CACHE_PATH)) {
-            fs.mkdirSync(CACHE_PATH, { recursive: true });
+        try {
+            await fs.access(CACHE_PATH);
+        } catch {
+            await fs.mkdir(CACHE_PATH, { recursive: true });
         }
 
         // If an uncompressed version exists, return it
         const isCompressed = path.extname(fileName) === '.gz';
         const uncompressedName = path.basename(fileName, '.gz');
         const uncompressedPath = path.join(CACHE_PATH, uncompressedName);
-        if (isCompressed && fs.existsSync(uncompressedPath)) {
-            return uncompressedPath;
+        if (isCompressed) {
+            try {
+                await fs.access(uncompressedPath);
+                return uncompressedPath;
+            } catch { /* not found */ }
         }
 
         const cachedFile = path.join(CACHE_PATH, fileName);
-        if (fs.existsSync(cachedFile)) {
+        try {
+            await fs.access(cachedFile);
             // If the file was downloaded manually
             if (isCompressed) {
-                const compressedBuffer = await fs.promises.readFile(cachedFile);
+                const compressedBuffer = await fs.readFile(cachedFile);
                 const decompressedBuffer = await gunzip(compressedBuffer);
-                writeFileAtomicSync(uncompressedPath, decompressedBuffer);
-                await fs.promises.unlink(cachedFile);
+                await writeFileAtomic(uncompressedPath, decompressedBuffer);
+                await fs.unlink(cachedFile);
                 return uncompressedPath;
             }
             return cachedFile;
+        } catch {
+            // file does not exist, continue
         }
 
         if (!IS_DOWNLOAD_ALLOWED) {
@@ -123,12 +133,12 @@ async function getPathToTokenizer(model, fallbackModel) {
 
         const arrayBuffer = await response.arrayBuffer();
         if (isCompressed) {
-            const decompressedBuffer = await gunzip(arrayBuffer);
-            writeFileAtomicSync(uncompressedPath, decompressedBuffer);
+            const decompressedBuffer = await gunzip(Buffer.from(arrayBuffer));
+            await writeFileAtomic(uncompressedPath, decompressedBuffer);
             return uncompressedPath;
         }
 
-        writeFileAtomicSync(cachedFile, Buffer.from(arrayBuffer));
+        await writeFileAtomic(cachedFile, Buffer.from(arrayBuffer));
         return cachedFile;
     } catch (error) {
         const getLastSegment = str => str?.split('/')?.pop() || '';
@@ -146,7 +156,7 @@ async function getPathToTokenizer(model, fallbackModel) {
  */
 class SentencePieceTokenizer {
     /**
-     * @type {import('@agnai/sentencepiece-js').SentencePieceProcessor} Sentencepiece tokenizer instance
+     * @type {object} Sentencepiece tokenizer instance
      */
     #instance;
     /**
@@ -170,7 +180,7 @@ class SentencePieceTokenizer {
 
     /**
      * Gets the Sentencepiece tokenizer instance.
-     * @returns {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>} Sentencepiece tokenizer instance
+     * @returns {Promise<object|null>} Sentencepiece tokenizer instance
      */
     async get() {
         if (this.#instance) {
@@ -228,7 +238,7 @@ class WebTokenizer {
 
         try {
             const pathToModel = await getPathToTokenizer(this.#model, this.#fallbackModel);
-            const fileBuffer = await fs.promises.readFile(pathToModel);
+            const fileBuffer = await fs.readFile(pathToModel);
             this.#instance = await Tokenizer.fromJSON(fileBuffer);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
             return this.#instance;
@@ -759,309 +769,287 @@ router.post('/command-a/decode', createWebTokenizerDecodingHandler(commandAToken
 router.post('/nemo/decode', createWebTokenizerDecodingHandler(nemoTokenizer));
 router.post('/deepseek/decode', createWebTokenizerDecodingHandler(deepseekTokenizer));
 
-router.post('/openai/encode', async function (req, res) {
-    try {
-        const queryModel = String(req.query.model || '');
+router.post('/openai/encode', asyncHandler(async function (req, res) {
+    const queryModel = String(req.query.model || '');
 
-        if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
-            const handler = createWebTokenizerEncodingHandler(llama3_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('llama')) {
-            const handler = createSentencepieceEncodingHandler(spp_llama);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('mistral')) {
-            const handler = createSentencepieceEncodingHandler(spp_mistral);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('yi')) {
-            const handler = createSentencepieceEncodingHandler(spp_yi);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('claude')) {
-            const handler = createWebTokenizerEncodingHandler(claude_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
-            const handler = createSentencepieceEncodingHandler(spp_gemma);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('jamba')) {
-            const handler = createSentencepieceEncodingHandler(spp_jamba);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('qwen2')) {
-            const handler = createWebTokenizerEncodingHandler(qwen2Tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-r')) {
-            const handler = createWebTokenizerEncodingHandler(commandRTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-a')) {
-            const handler = createWebTokenizerEncodingHandler(commandATokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('nemo')) {
-            const handler = createWebTokenizerEncodingHandler(nemoTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('deepseek')) {
-            const handler = createWebTokenizerEncodingHandler(deepseekTokenizer);
-            return handler(req, res);
-        }
-
-        const model = getTokenizerModel(queryModel);
-        const handler = createTiktokenEncodingHandler(model);
+    if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
+        const handler = createWebTokenizerEncodingHandler(llama3_tokenizer);
         return handler(req, res);
-    } catch (error) {
-        console.error(error);
-        return res.send({ ids: [], count: 0, chunks: [] });
     }
-});
 
-router.post('/openai/decode', async function (req, res) {
-    try {
-        const queryModel = String(req.query.model || '');
-
-        if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
-            const handler = createWebTokenizerDecodingHandler(llama3_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('llama')) {
-            const handler = createSentencepieceDecodingHandler(spp_llama);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('mistral')) {
-            const handler = createSentencepieceDecodingHandler(spp_mistral);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('yi')) {
-            const handler = createSentencepieceDecodingHandler(spp_yi);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('claude')) {
-            const handler = createWebTokenizerDecodingHandler(claude_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
-            const handler = createSentencepieceDecodingHandler(spp_gemma);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('jamba')) {
-            const handler = createSentencepieceDecodingHandler(spp_jamba);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('qwen2')) {
-            const handler = createWebTokenizerDecodingHandler(qwen2Tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-r')) {
-            const handler = createWebTokenizerDecodingHandler(commandRTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-a')) {
-            const handler = createWebTokenizerDecodingHandler(commandATokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('nemo')) {
-            const handler = createWebTokenizerDecodingHandler(nemoTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('deepseek')) {
-            const handler = createWebTokenizerDecodingHandler(deepseekTokenizer);
-            return handler(req, res);
-        }
-
-        const model = getTokenizerModel(queryModel);
-        const handler = createTiktokenDecodingHandler(model);
+    if (queryModel.includes('llama')) {
+        const handler = createSentencepieceEncodingHandler(spp_llama);
         return handler(req, res);
-    } catch (error) {
-        console.error(error);
-        return res.send({ text: '' });
     }
-});
 
-router.post('/openai/count', async function (req, res) {
-    try {
-        if (!req.body) return res.sendStatus(400);
+    if (queryModel.includes('mistral')) {
+        const handler = createSentencepieceEncodingHandler(spp_mistral);
+        return handler(req, res);
+    }
 
-        let num_tokens = 0;
-        const queryModel = String(req.query.model || '');
-        const model = getTokenizerModel(queryModel);
+    if (queryModel.includes('yi')) {
+        const handler = createSentencepieceEncodingHandler(spp_yi);
+        return handler(req, res);
+    }
 
-        if (model === 'claude') {
-            const instance = await claude_tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Claude tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('claude')) {
+        const handler = createWebTokenizerEncodingHandler(claude_tokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'llama3' || model === 'llama-3') {
-            const instance = await llama3_tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Llama3 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
+        const handler = createSentencepieceEncodingHandler(spp_gemma);
+        return handler(req, res);
+    }
 
-        if (model === 'llama') {
-            num_tokens = await countSentencepieceArrayTokens(spp_llama, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('jamba')) {
+        const handler = createSentencepieceEncodingHandler(spp_jamba);
+        return handler(req, res);
+    }
 
-        if (model === 'mistral') {
-            num_tokens = await countSentencepieceArrayTokens(spp_mistral, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('qwen2')) {
+        const handler = createWebTokenizerEncodingHandler(qwen2Tokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'yi') {
-            num_tokens = await countSentencepieceArrayTokens(spp_yi, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('command-r')) {
+        const handler = createWebTokenizerEncodingHandler(commandRTokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'gemma' || model === 'gemini') {
-            num_tokens = await countSentencepieceArrayTokens(spp_gemma, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('command-a')) {
+        const handler = createWebTokenizerEncodingHandler(commandATokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'jamba') {
-            num_tokens = await countSentencepieceArrayTokens(spp_jamba, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('nemo')) {
+        const handler = createWebTokenizerEncodingHandler(nemoTokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'qwen2') {
-            const instance = await qwen2Tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Qwen2 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('deepseek')) {
+        const handler = createWebTokenizerEncodingHandler(deepseekTokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'command-r') {
-            const instance = await commandRTokenizer.get();
-            if (!instance) throw new Error('Failed to load the Command-R tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    const model = getTokenizerModel(queryModel);
+    const handler = createTiktokenEncodingHandler(model);
+    return handler(req, res);
+}));
 
-        if (model === 'command-a') {
-            const instance = await commandATokenizer.get();
-            if (!instance) throw new Error('Failed to load the Command-A tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+router.post('/openai/decode', asyncHandler(async function (req, res) {
+    const queryModel = String(req.query.model || '');
 
-        if (model === 'nemo') {
-            const instance = await nemoTokenizer.get();
-            if (!instance) throw new Error('Failed to load the Nemo tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
+        const handler = createWebTokenizerDecodingHandler(llama3_tokenizer);
+        return handler(req, res);
+    }
 
-        if (model === 'deepseek') {
-            const instance = await deepseekTokenizer.get();
-            if (!instance) throw new Error('Failed to load the DeepSeek tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
+    if (queryModel.includes('llama')) {
+        const handler = createSentencepieceDecodingHandler(spp_llama);
+        return handler(req, res);
+    }
 
-        const tokensPerName = queryModel.includes('gpt-3.5-turbo-0301') ? -1 : 1;
-        const tokensPerMessage = queryModel.includes('gpt-3.5-turbo-0301') ? 4 : 3;
-        const tokensPadding = 3;
+    if (queryModel.includes('mistral')) {
+        const handler = createSentencepieceDecodingHandler(spp_mistral);
+        return handler(req, res);
+    }
 
-        const tokenizer = getTiktokenTokenizer(model);
+    if (queryModel.includes('yi')) {
+        const handler = createSentencepieceDecodingHandler(spp_yi);
+        return handler(req, res);
+    }
 
-        for (const msg of req.body) {
-            try {
-                num_tokens += tokensPerMessage;
-                for (const [key, value] of Object.entries(msg)) {
-                    num_tokens += tokenizer.encode(value).length;
-                    if (key == 'name') {
-                        num_tokens += tokensPerName;
-                    }
+    if (queryModel.includes('claude')) {
+        const handler = createWebTokenizerDecodingHandler(claude_tokenizer);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
+        const handler = createSentencepieceDecodingHandler(spp_gemma);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('jamba')) {
+        const handler = createSentencepieceDecodingHandler(spp_jamba);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('qwen2')) {
+        const handler = createWebTokenizerDecodingHandler(qwen2Tokenizer);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('command-r')) {
+        const handler = createWebTokenizerDecodingHandler(commandRTokenizer);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('command-a')) {
+        const handler = createWebTokenizerDecodingHandler(commandATokenizer);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('nemo')) {
+        const handler = createWebTokenizerDecodingHandler(nemoTokenizer);
+        return handler(req, res);
+    }
+
+    if (queryModel.includes('deepseek')) {
+        const handler = createWebTokenizerDecodingHandler(deepseekTokenizer);
+        return handler(req, res);
+    }
+
+    const model = getTokenizerModel(queryModel);
+    const handler = createTiktokenDecodingHandler(model);
+    return handler(req, res);
+}));
+
+router.post('/openai/count', asyncHandler(async function (req, res) {
+    if (!req.body) return res.sendStatus(400);
+
+    let num_tokens = 0;
+    const queryModel = String(req.query.model || '');
+    const model = getTokenizerModel(queryModel);
+
+    if (model === 'claude') {
+        const instance = await claude_tokenizer.get();
+        if (!instance) throw new Error('Failed to load the Claude tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'llama3' || model === 'llama-3') {
+        const instance = await llama3_tokenizer.get();
+        if (!instance) throw new Error('Failed to load the Llama3 tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'llama') {
+        num_tokens = await countSentencepieceArrayTokens(spp_llama, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'mistral') {
+        num_tokens = await countSentencepieceArrayTokens(spp_mistral, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'yi') {
+        num_tokens = await countSentencepieceArrayTokens(spp_yi, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'gemma' || model === 'gemini') {
+        num_tokens = await countSentencepieceArrayTokens(spp_gemma, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'jamba') {
+        num_tokens = await countSentencepieceArrayTokens(spp_jamba, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'qwen2') {
+        const instance = await qwen2Tokenizer.get();
+        if (!instance) throw new Error('Failed to load the Qwen2 tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'command-r') {
+        const instance = await commandRTokenizer.get();
+        if (!instance) throw new Error('Failed to load the Command-R tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'command-a') {
+        const instance = await commandATokenizer.get();
+        if (!instance) throw new Error('Failed to load the Command-A tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'nemo') {
+        const instance = await nemoTokenizer.get();
+        if (!instance) throw new Error('Failed to load the Nemo tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    if (model === 'deepseek') {
+        const instance = await deepseekTokenizer.get();
+        if (!instance) throw new Error('Failed to load the DeepSeek tokenizer');
+        num_tokens = countWebTokenizerTokens(instance, req.body);
+        return res.send({ 'token_count': num_tokens });
+    }
+
+    const tokensPerName = queryModel.includes('gpt-3.5-turbo-0301') ? -1 : 1;
+    const tokensPerMessage = queryModel.includes('gpt-3.5-turbo-0301') ? 4 : 3;
+    const tokensPadding = 3;
+
+    const tokenizer = getTiktokenTokenizer(model);
+
+    for (const msg of req.body) {
+        try {
+            num_tokens += tokensPerMessage;
+            for (const [key, value] of Object.entries(msg)) {
+                num_tokens += tokenizer.encode(value).length;
+                if (key == 'name') {
+                    num_tokens += tokensPerName;
                 }
-            } catch {
-                console.warn('Error tokenizing message:', msg);
             }
+        } catch {
+            console.warn('Error tokenizing message:', msg);
         }
-        num_tokens += tokensPadding;
-
-        // NB: Since 2023-10-14, the GPT-3.5 Turbo 0301 model shoves in 7-9 extra tokens to every message.
-        // More details: https://community.openai.com/t/gpt-3-5-turbo-0301-showing-different-behavior-suddenly/431326/14
-        if (queryModel.includes('gpt-3.5-turbo-0301')) {
-            num_tokens += 9;
-        }
-
-        // not needed for cached tokenizers
-        //tokenizer.free();
-
-        res.send({ 'token_count': num_tokens });
-    } catch (error) {
-        console.error('An error counting tokens, using fallback estimation method', error);
-        const jsonBody = JSON.stringify(req.body);
-        const num_tokens = Math.ceil(jsonBody.length / CHARS_PER_TOKEN);
-        res.send({ 'token_count': num_tokens });
     }
-});
+    num_tokens += tokensPadding;
 
-router.post('/remote/kobold/count', async function (request, response) {
+    // NB: Since 2023-10-14, the GPT-3.5 Turbo 0301 model shoves in 7-9 extra tokens to every message.
+    // More details: https://community.openai.com/t/gpt-3-5-turbo-0301-showing-different-behavior-suddenly/431326/14
+    if (queryModel.includes('gpt-3.5-turbo-0301')) {
+        num_tokens += 9;
+    }
+
+    // not needed for cached tokenizers
+    //tokenizer.free();
+
+    res.send({ 'token_count': num_tokens });
+}));
+
+router.post('/remote/kobold/count', asyncHandler(async function (request, response) {
     if (!request.body) {
         return response.sendStatus(400);
     }
     const text = String(request.body.text) || '';
     const baseUrl = String(request.body.url);
 
-    try {
-        const args = {
-            method: 'POST',
-            body: JSON.stringify({ 'prompt': text }),
-            headers: { 'Content-Type': 'application/json' },
-        };
+    const args = {
+        method: 'POST',
+        body: JSON.stringify({ 'prompt': text }),
+        headers: { 'Content-Type': 'application/json' },
+    };
 
-        let url = String(baseUrl).replace(/\/$/, '');
-        url += '/extra/tokencount';
+    let url = String(baseUrl).replace(/\/$/, '');
+    url += '/extra/tokencount';
 
-        const result = await fetch(url, args);
+    const result = await fetch(url, args);
 
-        if (!result.ok) {
-            console.warn(`API returned error: ${result.status} ${result.statusText}`);
-            return response.send({ error: true });
-        }
-
-        /** @type {any} */
-        const data = await result.json();
-        const count = data['value'];
-        const ids = data['ids'] ?? [];
-        return response.send({ count, ids });
-    } catch (error) {
-        console.error(error);
+    if (!result.ok) {
+        console.warn(`API returned error: ${result.status} ${result.statusText}`);
         return response.send({ error: true });
     }
-});
 
-router.post('/remote/textgenerationwebui/encode', async function (request, response) {
+    /** @type {any} */
+    const data = await result.json();
+    const count = data['value'];
+    const ids = data['ids'] ?? [];
+    return response.send({ count, ids });
+}));
+
+router.post('/remote/textgenerationwebui/encode', asyncHandler(async function (request, response) {
     if (!request.body) {
         return response.sendStatus(400);
     }
@@ -1070,59 +1058,54 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
     const vllmModel = String(request.body.vllm_model) || '';
     const aphroditeModel = String(request.body.aphrodite_model) || '';
 
-    try {
-        const args = {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        };
+    const args = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+    };
 
-        setAdditionalHeaders(request, args, baseUrl);
+    setAdditionalHeaders(request, args, baseUrl);
 
-        // Convert to string + remove trailing slash + /v1 suffix
-        let url = String(baseUrl).replace(/\/$/, '').replace(/\/v1$/, '');
+    // Convert to string + remove trailing slash + /v1 suffix
+    let url = String(baseUrl).replace(/\/$/, '').replace(/\/v1$/, '');
 
-        switch (request.body.api_type) {
-            case TEXTGEN_TYPES.TABBY:
-                url += '/v1/token/encode';
-                args.body = JSON.stringify({ 'text': text });
-                break;
-            case TEXTGEN_TYPES.KOBOLDCPP:
-                url += '/api/extra/tokencount';
-                args.body = JSON.stringify({ 'prompt': text });
-                break;
-            case TEXTGEN_TYPES.LLAMACPP:
-                url += '/tokenize';
-                args.body = JSON.stringify({ 'content': text });
-                break;
-            case TEXTGEN_TYPES.VLLM:
-                url += '/tokenize';
-                args.body = JSON.stringify({ 'model': vllmModel, 'prompt': text });
-                break;
-            case TEXTGEN_TYPES.APHRODITE:
-                url += '/v1/tokenize';
-                args.body = JSON.stringify({ 'model': aphroditeModel, 'prompt': text });
-                break;
-            default:
-                url += '/v1/internal/encode';
-                args.body = JSON.stringify({ 'text': text });
-                break;
-        }
+    switch (request.body.api_type) {
+        case TEXTGEN_TYPES.TABBY:
+            url += '/v1/token/encode';
+            args.body = JSON.stringify({ 'text': text });
+            break;
+        case TEXTGEN_TYPES.KOBOLDCPP:
+            url += '/api/extra/tokencount';
+            args.body = JSON.stringify({ 'prompt': text });
+            break;
+        case TEXTGEN_TYPES.LLAMACPP:
+            url += '/tokenize';
+            args.body = JSON.stringify({ 'content': text });
+            break;
+        case TEXTGEN_TYPES.VLLM:
+            url += '/tokenize';
+            args.body = JSON.stringify({ 'model': vllmModel, 'prompt': text });
+            break;
+        case TEXTGEN_TYPES.APHRODITE:
+            url += '/v1/tokenize';
+            args.body = JSON.stringify({ 'model': aphroditeModel, 'prompt': text });
+            break;
+        default:
+            url += '/v1/internal/encode';
+            args.body = JSON.stringify({ 'text': text });
+            break;
+    }
 
-        const result = await fetch(url, args);
+    const result = await fetch(url, args);
 
-        if (!result.ok) {
-            console.warn(`API returned error: ${result.status} ${result.statusText}`);
-            return response.send({ error: true });
-        }
-
-        /** @type {any} */
-        const data = await result.json();
-        const count = (data?.length ?? data?.count ?? data?.value ?? data?.tokens?.length);
-        const ids = (data?.tokens ?? data?.ids ?? []);
-
-        return response.send({ count, ids });
-    } catch (error) {
-        console.error(error);
+    if (!result.ok) {
+        console.warn(`API returned error: ${result.status} ${result.statusText}`);
         return response.send({ error: true });
     }
-});
+
+    /** @type {any} */
+    const data = await result.json();
+    const count = (data?.length ?? data?.count ?? data?.value ?? data?.tokens?.length);
+    const ids = (data?.tokens ?? data?.ids ?? []);
+
+    return response.send({ count, ids });
+}));

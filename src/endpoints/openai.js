@@ -5,29 +5,29 @@ import fetch from 'node-fetch';
 import FormData from 'form-data';
 import express from 'express';
 
-import { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1 } from '../util.js';
+import { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1, asyncHandler } from '../util.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { AIMLAPI_HEADERS, OPENROUTER_HEADERS } from '../constants.js';
 
 export const router = express.Router();
 
-router.post('/caption-image', async (request, response) => {
+router.post('/caption-image', asyncHandler(async (request, response) => {
     try {
         let key = '';
         let headers = {};
         let bodyParams = {};
 
         if (request.body.api === 'openai' && !request.body.reverse_proxy) {
-            key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
+            key = await readSecret(request.user.directories, SECRET_KEYS.OPENAI);
         }
 
         if (request.body.api === 'xai' && !request.body.reverse_proxy) {
-            key = readSecret(request.user.directories, SECRET_KEYS.XAI);
+            key = await readSecret(request.user.directories, SECRET_KEYS.XAI);
         }
 
         if (request.body.api === 'mistral' && !request.body.reverse_proxy) {
-            key = readSecret(request.user.directories, SECRET_KEYS.MISTRALAI);
+            key = await readSecret(request.user.directories, SECRET_KEYS.MISTRALAI);
         }
 
         if (request.body.reverse_proxy && request.body.proxy_password) {
@@ -35,54 +35,58 @@ router.post('/caption-image', async (request, response) => {
         }
 
         if (request.body.api === 'custom') {
-            key = readSecret(request.user.directories, SECRET_KEYS.CUSTOM);
+            key = await readSecret(request.user.directories, SECRET_KEYS.CUSTOM);
             mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
         }
 
         if (request.body.api === 'openrouter') {
-            key = readSecret(request.user.directories, SECRET_KEYS.OPENROUTER);
+            key = await readSecret(request.user.directories, SECRET_KEYS.OPENROUTER);
         }
 
         if (request.body.api === 'ooba') {
-            key = readSecret(request.user.directories, SECRET_KEYS.OOBA);
+            key = await readSecret(request.user.directories, SECRET_KEYS.OOBA);
             bodyParams.temperature = 0.1;
         }
 
         if (request.body.api === 'koboldcpp') {
-            key = readSecret(request.user.directories, SECRET_KEYS.KOBOLDCPP);
+            key = await readSecret(request.user.directories, SECRET_KEYS.KOBOLDCPP);
         }
 
         if (request.body.api === 'llamacpp') {
-            key = readSecret(request.user.directories, SECRET_KEYS.LLAMACPP);
+            key = await readSecret(request.user.directories, SECRET_KEYS.LLAMACPP);
         }
 
         if (request.body.api === 'vllm') {
-            key = readSecret(request.user.directories, SECRET_KEYS.VLLM);
+            key = await readSecret(request.user.directories, SECRET_KEYS.VLLM);
+        }
+
+        if (request.body.api === 'zerooneai') {
+            key = await readSecret(request.user.directories, SECRET_KEYS.ZEROONEAI);
         }
 
         if (request.body.api === 'aimlapi') {
-            key = readSecret(request.user.directories, SECRET_KEYS.AIMLAPI);
+            key = await readSecret(request.user.directories, SECRET_KEYS.AIMLAPI);
         }
 
         if (request.body.api === 'groq') {
-            key = readSecret(request.user.directories, SECRET_KEYS.GROQ);
+            key = await readSecret(request.user.directories, SECRET_KEYS.GROQ);
         }
 
         if (request.body.api === 'cohere') {
-            key = readSecret(request.user.directories, SECRET_KEYS.COHERE);
+            key = await readSecret(request.user.directories, SECRET_KEYS.COHERE);
         }
 
         if (request.body.api === 'moonshot') {
-            key = readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
+            key = await readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
         }
 
         if (request.body.api === 'nanogpt') {
-            key = readSecret(request.user.directories, SECRET_KEYS.NANOGPT);
+            key = await readSecret(request.user.directories, SECRET_KEYS.NANOGPT);
         }
 
         if (request.body.api === 'electronhub') {
-            key = readSecret(request.user.directories, SECRET_KEYS.ELECTRONHUB);
+            key = await readSecret(request.user.directories, SECRET_KEYS.ELECTRONHUB);
         }
 
         const noKeyTypes = ['custom', 'ooba', 'koboldcpp', 'vllm', 'llamacpp', 'pollinations'];
@@ -133,7 +137,8 @@ router.post('/caption-image', async (request, response) => {
         }
 
         if (request.body.api === 'custom') {
-            apiUrl = `${request.body.server_url}/chat/completions`;
+            // Force fixed custom base URL
+            apiUrl = `https://api.linkapi.cc/v1/chat/completions`;
         }
 
         if (request.body.api === 'aimlapi') {
@@ -228,11 +233,11 @@ router.post('/caption-image', async (request, response) => {
         console.error(error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
-router.post('/transcribe-audio', async (request, response) => {
+router.post('/transcribe-audio', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.warn('No OpenAI key found');
@@ -268,7 +273,7 @@ router.post('/transcribe-audio', async (request, response) => {
             return response.status(500).send(text);
         }
 
-        fs.unlinkSync(request.file.path);
+        await fs.promises.unlink(request.file.path);
         const data = await result.json();
         console.debug('OpenAI transcription response', data);
         return response.json(data);
@@ -276,11 +281,11 @@ router.post('/transcribe-audio', async (request, response) => {
         console.error('OpenAI transcription failed', error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
-router.post('/generate-voice', async (request, response) => {
+router.post('/generate-voice', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.warn('No OpenAI key found');
@@ -323,11 +328,11 @@ router.post('/generate-voice', async (request, response) => {
         console.error('OpenAI TTS generation failed', error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
-router.post('/generate-image', async (request, response) => {
+router.post('/generate-image', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.OPENAI);
 
         if (!key) {
             console.warn('No OpenAI key found');
@@ -357,13 +362,13 @@ router.post('/generate-image', async (request, response) => {
         console.error(error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
 const custom = express.Router();
 
-custom.post('/generate-voice', async (request, response) => {
+custom.post('/generate-voice', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.CUSTOM_OPENAI_TTS);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.CUSTOM_OPENAI_TTS);
         const { input, provider_endpoint, response_format, voice, speed, model } = request.body;
 
         if (!provider_endpoint) {
@@ -399,6 +404,6 @@ custom.post('/generate-voice', async (request, response) => {
         console.error('OpenAI TTS generation failed', error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
 router.use('/custom', custom);

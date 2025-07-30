@@ -2,12 +2,13 @@ import fetch from 'node-fetch';
 import { Router } from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
+import { asyncHandler } from '../util.js';
 
 export const router = Router();
 
-router.post('/list', async (req, res) => {
+router.post('/list', asyncHandler(async (req, res) => {
     try {
-        const key = readSecret(req.user.directories, SECRET_KEYS.AZURE_TTS);
+        const key = await readSecret(req.user.directories, SECRET_KEYS.AZURE_TTS);
 
         if (!key) {
             console.warn('Azure TTS API Key not set');
@@ -41,11 +42,11 @@ router.post('/list', async (req, res) => {
         console.error('Azure Request failed', error);
         return res.sendStatus(500);
     }
-});
+}));
 
-router.post('/generate', async (req, res) => {
+router.post('/generate', asyncHandler(async (req, res) => {
     try {
-        const key = readSecret(req.user.directories, SECRET_KEYS.AZURE_TTS);
+        const key = await readSecret(req.user.directories, SECRET_KEYS.AZURE_TTS);
 
         if (!key) {
             console.warn('Azure TTS API Key not set');
@@ -85,4 +86,4 @@ router.post('/generate', async (req, res) => {
         console.error('Azure Request failed', error);
         return res.sendStatus(500);
     }
-});
+}));

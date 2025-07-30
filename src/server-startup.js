@@ -202,9 +202,9 @@ export class ServerStartup {
 
     /**
      * Checks if SSL options are valid. If not, it will print an error message and exit the process.
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    #verifySslOptions() {
+    async #verifySslOptions() {
         if (!this.cliArgs.ssl) return;
 
         if (!this.cliArgs.certPath) {
@@ -215,11 +215,15 @@ export class ServerStartup {
             this.#fatal('Error: SSL key path is required when using HTTPS. Check your config');
         }
 
-        if (!fs.existsSync(this.cliArgs.certPath)) {
+        try {
+            await fs.promises.access(this.cliArgs.certPath);
+        } catch {
             this.#fatal('Error: SSL certificate path does not exist');
         }
 
-        if (!fs.existsSync(this.cliArgs.keyPath)) {
+        try {
+            await fs.promises.access(this.cliArgs.keyPath);
+        } catch {
             this.#fatal('Error: SSL key path does not exist');
         }
     }
@@ -230,16 +234,16 @@ export class ServerStartup {
      * @param {number} ipVersion the ip version to use
      * @returns {Promise<void>} A promise that resolves when the server is listening
      */
-    #createHttpsServer(url, ipVersion) {
-        this.#verifySslOptions();
+    async #createHttpsServer(url, ipVersion) {
+        await this.#verifySslOptions();
+        /** @type {import('https').ServerOptions} */
+        const sslOptions = {
+            cert: await fs.promises.readFile(this.cliArgs.certPath),
+            key: await fs.promises.readFile(this.cliArgs.keyPath),
+            passphrase: String(this.cliArgs.keyPassphrase ?? ''),
+        };
+        const server = https.createServer(sslOptions, this.app);
         return new Promise((resolve, reject) => {
-            /** @type {import('https').ServerOptions} */
-            const sslOptions = {
-                cert: fs.readFileSync(this.cliArgs.certPath),
-                key: fs.readFileSync(this.cliArgs.keyPath),
-                passphrase: String(this.cliArgs.keyPassphrase ?? ''),
-            };
-            const server = https.createServer(sslOptions, this.app);
             server.on('error', reject);
             server.on('listening', resolve);
 

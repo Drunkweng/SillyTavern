@@ -3,7 +3,7 @@ import express from 'express';
 
 import { decode } from 'html-entities';
 import { readSecret, SECRET_KEYS } from './secrets.js';
-import { trimV1 } from '../util.js';
+import { trimV1, asyncHandler } from '../util.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 
 export const router = express.Router();
@@ -90,9 +90,9 @@ async function extractTranscript(videoPageBody, lang) {
     return transcriptText;
 }
 
-router.post('/serpapi', async (request, response) => {
+router.post('/serpapi', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.SERPAPI);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.SERPAPI);
 
         if (!key) {
             console.error('No SerpApi key found');
@@ -117,13 +117,13 @@ router.post('/serpapi', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));
 
 /**
  * Get the transcript of a YouTube video
  * @copyright https://github.com/Kakulukian/youtube-transcript (MIT License)
  */
-router.post('/transcript', async (request, response) => {
+router.post('/transcript', asyncHandler(async (request, response) => {
     try {
         const id = request.body.id;
         const lang = request.body.lang;
@@ -158,9 +158,9 @@ router.post('/transcript', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/searxng', async (request, response) => {
+router.post('/searxng', asyncHandler(async (request, response) => {
     try {
         const { baseUrl, query, preferences, categories } = request.body;
 
@@ -212,11 +212,11 @@ router.post('/searxng', async (request, response) => {
         console.error('SearXNG request failed', error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/tavily', async (request, response) => {
+router.post('/tavily', asyncHandler(async (request, response) => {
     try {
-        const apiKey = readSecret(request.user.directories, SECRET_KEYS.TAVILY);
+        const apiKey = await readSecret(request.user.directories, SECRET_KEYS.TAVILY);
 
         if (!apiKey) {
             console.error('No Tavily key found');
@@ -261,9 +261,9 @@ router.post('/tavily', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/koboldcpp', async (request, response) => {
+router.post('/koboldcpp', asyncHandler(async (request, response) => {
     try {
         const { query, url } = request.body;
 
@@ -297,11 +297,11 @@ router.post('/koboldcpp', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/serper', async (request, response) => {
+router.post('/serper', asyncHandler(async (request, response) => {
     try {
-        const key = readSecret(request.user.directories, SECRET_KEYS.SERPER);
+        const key = await readSecret(request.user.directories, SECRET_KEYS.SERPER);
 
         if (!key) {
             console.error('No Serper key found');
@@ -339,9 +339,9 @@ router.post('/serper', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));
 
-router.post('/visit', async (request, response) => {
+router.post('/visit', asyncHandler(async (request, response) => {
     try {
         const url = request.body.url;
         const html = Boolean(request.body.html ?? true);
@@ -406,4 +406,4 @@ router.post('/visit', async (request, response) => {
         console.error(error);
         return response.sendStatus(500);
     }
-});
+}));

@@ -28,22 +28,31 @@ export default function getWebpackServeMiddleware() {
      * @param {boolean} [param.forceDist] Whether to force the use the /dist folder.
      * @returns {Promise<void>}
      */
-    devMiddleware.runWebpackCompiler = ({ forceDist = false } = {}) => {
+    devMiddleware.runWebpackCompiler = async ({ forceDist = false } = {}) => {
         const publicLibConfig = getPublicLibConfig(forceDist);
         const compiler = webpack(publicLibConfig);
 
-        return new Promise((resolve) => {
-            console.log();
-            console.log('Compiling frontend libraries...');
-            compiler.run((_error, stats) => {
-                const output = stats?.toString(publicLibConfig.stats);
-                if (output) {
-                    console.log(output);
-                    console.log();
+        console.log();
+        console.log('Compiling frontend libraries...');
+
+        const stats = await new Promise((resolve, reject) => {
+            compiler.run((error, stats) => {
+                if (error) {
+                    return reject(error);
                 }
-                compiler.close(() => {
-                    resolve();
-                });
+                resolve(stats);
+            });
+        });
+
+        const output = stats?.toString(publicLibConfig.stats);
+        if (output) {
+            console.log(output);
+            console.log();
+        }
+
+        await new Promise((resolve) => {
+            compiler.close(() => {
+                resolve(undefined);
             });
         });
     };

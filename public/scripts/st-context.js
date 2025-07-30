@@ -57,7 +57,6 @@ import {
 import {
     extension_settings,
     ModuleWorkerWrapper,
-    renderExtensionTemplate,
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
     writeExtensionField,
@@ -160,7 +159,6 @@ export function getContext() {
         ToolManager,
         registerDebugFunction,
         /** @deprecated Use renderExtensionTemplateAsync instead. */
-        renderExtensionTemplate,
         renderExtensionTemplateAsync,
         registerDataBankScraper: ScraperManager.registerDataBankScraper.bind(ScraperManager),
         /** @deprecated Use callGenericPopup or Popup instead. */

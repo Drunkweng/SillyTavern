@@ -1,7 +1,8 @@
 import fetch from 'node-fetch';
 import express from 'express';
+// @ts-ignore
 import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormTypes, HordeAsyncRequestStates } from '@zeldafan0225/ai_horde';
-import { getVersion, delay, Cache } from '../util.js';
+import { getVersion, delay, Cache, asyncHandler } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 
 const ANONYMOUS_KEY = '0000000000';
@@ -55,12 +56,13 @@ function sanitizeHordeImagePrompt(prompt) {
     return prompt;
 }
 
-router.post('/text-workers', async (request, response) => {
+router.post('/text-workers', asyncHandler(async (request, response) => {
     try {
         const cachedWorkers = cache.get('workers');
 
         if (cachedWorkers && !request.body.force) {
-            return response.send(cachedWorkers);
+            response.send(cachedWorkers);
+            return;
         }
 
         const agent = await getClientAgent();
@@ -71,12 +73,12 @@ router.post('/text-workers', async (request, response) => {
         });
         const data = await fetchResult.json();
         cache.set('workers', data);
-        return response.send(data);
+        response.send(data);
     } catch (error) {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
 async function getHordeTextModelMetadata() {
     const response = await fetch(HORDE_TEXT_MODEL_METADATA_URL);
@@ -93,11 +95,12 @@ async function mergeModelsAndMetadata(models, metadata) {
     });
 }
 
-router.post('/text-models', async (request, response) => {
+router.post('/text-models', asyncHandler(async (request, response) => {
     try {
         const cachedModels = cache.get('models');
         if (cachedModels && !request.body.force) {
-            return response.send(cachedModels);
+            response.send(cachedModels);
+            return;
         }
 
         const agent = await getClientAgent();
@@ -119,14 +122,14 @@ router.post('/text-models', async (request, response) => {
         }
 
         cache.set('models', data);
-        return response.send(data);
+        response.send(data);
     } catch (error) {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/status', async (_, response) => {
+router.post('/status', asyncHandler(async (_, response) => {
     try {
         const agent = await getClientAgent();
         const fetchResult = await fetch('https://aihorde.net/api/v2/status/heartbeat', {
@@ -135,14 +138,14 @@ router.post('/status', async (_, response) => {
             },
         });
 
-        return response.send({ ok: fetchResult.ok });
+        response.send({ ok: fetchResult.ok });
     } catch (error) {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/cancel-task', async (request, response) => {
+router.post('/cancel-task', asyncHandler(async (request, response) => {
     try {
         const taskId = request.body.taskId;
         const agent = await getClientAgent();
@@ -155,14 +158,14 @@ router.post('/cancel-task', async (request, response) => {
 
         const data = await fetchResult.json();
         console.info(`Cancelled Horde task ${taskId}`);
-        return response.send(data);
+        response.send(data);
     } catch (error) {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/task-status', async (request, response) => {
+router.post('/task-status', asyncHandler(async (request, response) => {
     try {
         const taskId = request.body.taskId;
         const agent = await getClientAgent();
@@ -174,15 +177,15 @@ router.post('/task-status', async (request, response) => {
 
         const data = await fetchResult.json();
         console.info(`Horde task ${taskId} status:`, data);
-        return response.send(data);
+        response.send(data);
     } catch (error) {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/generate-text', async (request, response) => {
-    const apiKey = readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
+router.post('/generate-text', asyncHandler(async (request, response) => {
+    const apiKey = await readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
     const url = 'https://aihorde.net/api/v2/generate/text/async';
     const agent = await getClientAgent();
 
@@ -201,18 +204,19 @@ router.post('/generate-text', async (request, response) => {
         if (!result.ok) {
             const message = await result.text();
             console.error('Horde returned an error:', message);
-            return response.send({ error: { message } });
+            response.send({ error: { message } });
+            return;
         }
 
         const data = await result.json();
-        return response.send(data);
+        response.send(data);
     } catch (error) {
         console.error(error);
-        return response.send({ error: true });
+        response.send({ error: true });
     }
-});
+}));
 
-router.post('/sd-samplers', async (_, response) => {
+router.post('/sd-samplers', asyncHandler(async (_, response) => {
     try {
         const samplers = Object.values(ModelGenerationInputStableSamplers);
         response.send(samplers);
@@ -220,9 +224,9 @@ router.post('/sd-samplers', async (_, response) => {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/sd-models', async (_, response) => {
+router.post('/sd-models', asyncHandler(async (_, response) => {
     try {
         const ai_horde = await getHordeClient();
         const models = await ai_horde.getModels();
@@ -231,11 +235,11 @@ router.post('/sd-models', async (_, response) => {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/caption-image', async (request, response) => {
+router.post('/caption-image', asyncHandler(async (request, response) => {
     try {
-        const api_key_horde = readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
+        const api_key_horde = await readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
         const ai_horde = await getHordeClient();
         const result = await ai_horde.postAsyncInterrogate({
             source_image: request.body.image,
@@ -244,7 +248,8 @@ router.post('/caption-image', async (request, response) => {
 
         if (!result.id) {
             console.error('Image interrogation request is not satisfyable:', result.message || 'unknown error');
-            return response.sendStatus(400);
+            response.sendStatus(400);
+            return;
         }
 
         const MAX_ATTEMPTS = 200;
@@ -259,7 +264,8 @@ router.post('/caption-image', async (request, response) => {
 
                 if (status.forms === undefined) {
                     console.error('Image interrogation request failed: no forms found.');
-                    return response.sendStatus(500);
+                    response.sendStatus(500);
+                    return;
                 }
 
                 console.debug('Image interrogation result:', status);
@@ -267,15 +273,18 @@ router.post('/caption-image', async (request, response) => {
 
                 if (!caption) {
                     console.error('Image interrogation request failed: no caption found.');
-                    return response.sendStatus(500);
+                    response.sendStatus(500);
+                    return;
                 }
 
-                return response.send({ caption });
+                response.send({ caption });
+                return;
             }
 
             if (status.state === HordeAsyncRequestStates.faulted || status.state === HordeAsyncRequestStates.cancelled) {
                 console.error('Image interrogation request is not successful.');
-                return response.sendStatus(503);
+                response.sendStatus(503);
+                return;
             }
         }
 
@@ -283,28 +292,30 @@ router.post('/caption-image', async (request, response) => {
         console.error(error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/user-info', async (request, response) => {
-    const api_key_horde = readSecret(request.user.directories, SECRET_KEYS.HORDE);
+router.post('/user-info', asyncHandler(async (request, response) => {
+    const api_key_horde = await readSecret(request.user.directories, SECRET_KEYS.HORDE);
 
     if (!api_key_horde) {
-        return response.send({ anonymous: true });
+        response.send({ anonymous: true });
+        return;
     }
 
     try {
         const ai_horde = await getHordeClient();
         const user = await ai_horde.findUser({ token: api_key_horde });
-        return response.send(user);
+        response.send(user);
     } catch (error) {
         console.error(error);
-        return response.sendStatus(500);
+        response.sendStatus(500);
     }
-});
+}));
 
-router.post('/generate-image', async (request, response) => {
+router.post('/generate-image', asyncHandler(async (request, response) => {
     if (!request.body.prompt) {
-        return response.sendStatus(400);
+        response.sendStatus(400);
+        return;
     }
 
     const MAX_ATTEMPTS = 200;
@@ -329,7 +340,7 @@ router.post('/generate-image', async (request, response) => {
             request.body.prompt = sanitized;
         }
 
-        const api_key_horde = readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
+        const api_key_horde = await readSecret(request.user.directories, SECRET_KEYS.HORDE) || ANONYMOUS_KEY;
         console.debug('Stable Horde request:', request.body);
 
         const ai_horde = await getHordeClient();
@@ -360,7 +371,8 @@ router.post('/generate-image', async (request, response) => {
 
         if (!generation.id) {
             console.warn('Image generation request is not satisfyable:', generation.message || 'unknown error');
-            return response.sendStatus(400);
+            response.sendStatus(400);
+            return;
         }
 
         console.info('Horde image generation request:', generation);
@@ -381,24 +393,30 @@ router.post('/generate-image', async (request, response) => {
 
             if (check.done) {
                 const result = await ai_horde.getImageGenerationStatus(generation.id);
-                if (result.generations === undefined) return response.sendStatus(500);
-                return response.send(result.generations[0].img);
+                if (result.generations === undefined) {
+                    response.sendStatus(500);
+                    return;
+                }
+                response.send(result.generations[0].img);
+                return;
             }
 
             /*
             if (!check.is_possible) {
-                return response.sendStatus(503);
+                response.sendStatus(503);
+                return;
             }
             */
 
             if (check.faulted) {
-                return response.sendStatus(500);
+                response.sendStatus(500);
+                return;
             }
         }
 
-        return response.sendStatus(504);
+        response.sendStatus(504);
     } catch (error) {
         console.error(error);
-        return response.sendStatus(500);
+        response.sendStatus(500);
     }
-});
+}));

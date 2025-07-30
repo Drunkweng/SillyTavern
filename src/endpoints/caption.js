@@ -1,11 +1,12 @@
 import express from 'express';
 import { getPipeline, getRawImage } from '../transformers.js';
+import { asyncHandler } from '../util.js';
 
 export const router = express.Router();
 
 const TASK = 'image-to-text';
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
     try {
         const { image } = req.body;
 
@@ -26,4 +27,4 @@ router.post('/', async (req, res) => {
         console.error(error);
         return res.sendStatus(500);
     }
-});
+}));

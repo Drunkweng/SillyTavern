@@ -1,11 +1,11 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import { promises as fs } from 'node:fs';
 
 import vectra from 'vectra';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 
-import { getConfigValue } from '../util.js';
+import { getConfigValue, asyncHandler } from '../util.js';
 
 import { getNomicAIBatchVector, getNomicAIVector } from '../vectors/nomicai-vectors.js';
 import { getOpenAIVector, getOpenAIBatchVector } from '../vectors/openai-vectors.js';
@@ -35,6 +35,20 @@ const SOURCES = [
     'koboldcpp',
     'vertexai',
 ];
+
+/**
+ * Checks if a file exists.
+ * @param {string} path - The path to the file.
+ * @returns {Promise<boolean>} - True if the file exists, false otherwise.
+ */
+async function fileExists(path) {
+    try {
+        await fs.access(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * Gets the vector for the given text from the given source.
@@ -396,143 +410,112 @@ async function regenerateCorruptedIndexErrorHandler(req, res, error) {
         }
     }
 
-    console.error(error);
-    return res.sendStatus(500);
+    throw error;
 }
 
 export const router = express.Router();
 
-router.post('/query', async (req, res) => {
-    try {
-        if (!req.body.collectionId || !req.body.searchText) {
-            return res.sendStatus(400);
-        }
-
-        const collectionId = String(req.body.collectionId);
-        const searchText = String(req.body.searchText);
-        const topK = Number(req.body.topK) || 10;
-        const threshold = Number(req.body.threshold) || 0.0;
-        const source = String(req.body.source) || 'transformers';
-        const sourceSettings = getSourceSettings(source, req);
-
-        const results = await queryCollection(req.user.directories, collectionId, source, sourceSettings, searchText, topK, threshold);
-        return res.json(results);
-    } catch (error) {
-        return regenerateCorruptedIndexErrorHandler(req, res, error);
+router.post('/query', asyncHandler(async (req, res) => {
+    if (!req.body.collectionId || !req.body.searchText) {
+        return res.sendStatus(400);
     }
-});
 
-router.post('/query-multi', async (req, res) => {
-    try {
-        if (!Array.isArray(req.body.collectionIds) || !req.body.searchText) {
-            return res.sendStatus(400);
-        }
+    const collectionId = String(req.body.collectionId);
+    const searchText = String(req.body.searchText);
+    const topK = Number(req.body.topK) || 10;
+    const threshold = Number(req.body.threshold) || 0.0;
+    const source = String(req.body.source) || 'transformers';
+    const sourceSettings = getSourceSettings(source, req);
 
-        const collectionIds = req.body.collectionIds.map(x => String(x));
-        const searchText = String(req.body.searchText);
-        const topK = Number(req.body.topK) || 10;
-        const threshold = Number(req.body.threshold) || 0.0;
-        const source = String(req.body.source) || 'transformers';
-        const sourceSettings = getSourceSettings(source, req);
+    const results = await queryCollection(req.user.directories, collectionId, source, sourceSettings, searchText, topK, threshold);
+    return res.json(results);
+}));
 
-        const results = await multiQueryCollection(req.user.directories, collectionIds, source, sourceSettings, searchText, topK, threshold);
-        return res.json(results);
-    } catch (error) {
-        return regenerateCorruptedIndexErrorHandler(req, res, error);
+router.post('/query-multi', asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body.collectionIds) || !req.body.searchText) {
+        return res.sendStatus(400);
     }
-});
 
-router.post('/insert', async (req, res) => {
-    try {
-        if (!Array.isArray(req.body.items) || !req.body.collectionId) {
-            return res.sendStatus(400);
-        }
+    const collectionIds = req.body.collectionIds.map(x => String(x));
+    const searchText = String(req.body.searchText);
+    const topK = Number(req.body.topK) || 10;
+    const threshold = Number(req.body.threshold) || 0.0;
+    const source = String(req.body.source) || 'transformers';
+    const sourceSettings = getSourceSettings(source, req);
 
-        const collectionId = String(req.body.collectionId);
-        const items = req.body.items.map(x => ({ hash: x.hash, text: x.text, index: x.index }));
-        const source = String(req.body.source) || 'transformers';
-        const sourceSettings = getSourceSettings(source, req);
+    const results = await multiQueryCollection(req.user.directories, collectionIds, source, sourceSettings, searchText, topK, threshold);
+    return res.json(results);
+}));
 
-        await insertVectorItems(req.user.directories, collectionId, source, sourceSettings, items);
-        return res.sendStatus(200);
-    } catch (error) {
-        return regenerateCorruptedIndexErrorHandler(req, res, error);
+router.post('/insert', asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body.items) || !req.body.collectionId) {
+        return res.sendStatus(400);
     }
-});
 
-router.post('/list', async (req, res) => {
-    try {
-        if (!req.body.collectionId) {
-            return res.sendStatus(400);
-        }
+    const collectionId = String(req.body.collectionId);
+    const items = req.body.items.map(x => ({ hash: x.hash, text: x.text, index: x.index }));
+    const source = String(req.body.source) || 'transformers';
+    const sourceSettings = getSourceSettings(source, req);
 
-        const collectionId = String(req.body.collectionId);
-        const source = String(req.body.source) || 'transformers';
-        const sourceSettings = getSourceSettings(source, req);
+    await insertVectorItems(req.user.directories, collectionId, source, sourceSettings, items);
+    return res.sendStatus(200);
+}));
 
-        const hashes = await getSavedHashes(req.user.directories, collectionId, source, sourceSettings);
-        return res.json(hashes);
-    } catch (error) {
-        return regenerateCorruptedIndexErrorHandler(req, res, error);
+router.post('/list', asyncHandler(async (req, res) => {
+    if (!req.body.collectionId) {
+        return res.sendStatus(400);
     }
-});
 
-router.post('/delete', async (req, res) => {
-    try {
-        if (!Array.isArray(req.body.hashes) || !req.body.collectionId) {
-            return res.sendStatus(400);
-        }
+    const collectionId = String(req.body.collectionId);
+    const source = String(req.body.source) || 'transformers';
+    const sourceSettings = getSourceSettings(source, req);
 
-        const collectionId = String(req.body.collectionId);
-        const hashes = req.body.hashes.map(x => Number(x));
-        const source = String(req.body.source) || 'transformers';
-        const sourceSettings = getSourceSettings(source, req);
+    const hashes = await getSavedHashes(req.user.directories, collectionId, source, sourceSettings);
+    return res.json(hashes);
+}));
 
-        await deleteVectorItems(req.user.directories, collectionId, source, sourceSettings, hashes);
-        return res.sendStatus(200);
-    } catch (error) {
-        return regenerateCorruptedIndexErrorHandler(req, res, error);
+router.post('/delete', asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body.hashes) || !req.body.collectionId) {
+        return res.sendStatus(400);
     }
-});
 
-router.post('/purge-all', async (req, res) => {
-    try {
-        for (const source of SOURCES) {
-            const sourcePath = path.join(req.user.directories.vectors, sanitize(source));
-            if (!fs.existsSync(sourcePath)) {
-                continue;
-            }
-            await fs.promises.rm(sourcePath, { recursive: true });
-            console.info(`Deleted vector source store at ${sourcePath}`);
+    const collectionId = String(req.body.collectionId);
+    const hashes = req.body.hashes.map(x => Number(x));
+    const source = String(req.body.source) || 'transformers';
+    const sourceSettings = getSourceSettings(source, req);
+
+    await deleteVectorItems(req.user.directories, collectionId, source, sourceSettings, hashes);
+    return res.sendStatus(200);
+}));
+
+router.post('/purge-all', asyncHandler(async (req, res) => {
+    for (const source of SOURCES) {
+        const sourcePath = path.join(req.user.directories.vectors, sanitize(source));
+        if (!await fileExists(sourcePath)) {
+            continue;
         }
-
-        return res.sendStatus(200);
-    } catch (error) {
-        console.error(error);
-        return res.sendStatus(500);
+        await fs.rm(sourcePath, { recursive: true });
+        console.info(`Deleted vector source store at ${sourcePath}`);
     }
-});
 
-router.post('/purge', async (req, res) => {
-    try {
-        if (!req.body.collectionId) {
-            return res.sendStatus(400);
-        }
+    return res.sendStatus(200);
+}));
 
-        const collectionId = String(req.body.collectionId);
-
-        for (const source of SOURCES) {
-            const sourcePath = path.join(req.user.directories.vectors, sanitize(source), sanitize(collectionId));
-            if (!fs.existsSync(sourcePath)) {
-                continue;
-            }
-            await fs.promises.rm(sourcePath, { recursive: true });
-            console.info(`Deleted vector index at ${sourcePath}`);
-        }
-
-        return res.sendStatus(200);
-    } catch (error) {
-        console.error(error);
-        return res.sendStatus(500);
+router.post('/purge', asyncHandler(async (req, res) => {
+    if (!req.body.collectionId) {
+        return res.sendStatus(400);
     }
-});
+
+    const collectionId = String(req.body.collectionId);
+
+    for (const source of SOURCES) {
+        const sourcePath = path.join(req.user.directories.vectors, sanitize(source), sanitize(collectionId));
+        if (!await fileExists(sourcePath)) {
+            continue;
+        }
+        await fs.rm(sourcePath, { recursive: true });
+        console.info(`Deleted vector index at ${sourcePath}`);
+    }
+
+    return res.sendStatus(200);
+}));

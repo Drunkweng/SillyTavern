@@ -34,7 +34,7 @@ export async function getOllamaVector(text, apiUrl, model, keep, directories) {
     url.pathname = '/api/embeddings';
 
     const headers = {};
-    setAdditionalHeadersByType(headers, TEXTGEN_TYPES.OLLAMA, apiUrl, directories);
+    await setAdditionalHeadersByType(headers, TEXTGEN_TYPES.OLLAMA, apiUrl, directories);
 
     const response = await fetch(url, {
         method: 'POST',

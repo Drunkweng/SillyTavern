@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { getPipeline } from '../transformers.js';
+import { asyncHandler } from '../util.js';
 
 const TASK = 'text-classification';
 
@@ -11,7 +12,7 @@ export const router = express.Router();
  */
 const cacheObject = new Map();
 
-router.post('/labels', async (req, res) => {
+router.post('/labels', asyncHandler(async (req, res) => {
     try {
         const pipe = await getPipeline(TASK);
         const result = Object.keys(pipe.model.config.label2id);
@@ -20,9 +21,9 @@ router.post('/labels', async (req, res) => {
         console.error(error);
         return res.sendStatus(500);
     }
-});
+}));
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
     try {
         const { text } = req.body;
 
@@ -52,4 +53,4 @@ router.post('/', async (req, res) => {
         console.error(error);
         return res.sendStatus(500);
     }
-});
+}));

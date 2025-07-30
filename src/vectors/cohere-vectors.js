@@ -10,7 +10,7 @@ import { SECRET_KEYS, readSecret } from '../endpoints/secrets.js';
  * @returns {Promise<number[][]>} - The array of vectors for the texts
  */
 export async function getCohereBatchVector(texts, isQuery, directories, model) {
-    const key = readSecret(directories, SECRET_KEYS.COHERE);
+    const key = await readSecret(directories, SECRET_KEYS.COHERE);
 
     if (!key) {
         console.warn('No API key found');

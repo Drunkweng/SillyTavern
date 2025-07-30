@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { GEMINI_SAFETY } from '../constants.js';
-import { getConfigValue, trimTrailingSlash } from '../util.js';
+import { getConfigValue, trimTrailingSlash, asyncHandler } from '../util.js';
 
 const API_MAKERSUITE = 'https://generativelanguage.googleapis.com';
 const API_VERTEX_AI = 'https://us-central1-aiplatform.googleapis.com';
@@ -46,7 +46,7 @@ export async function getVertexAIAuth(request) {
     }
 
     if (authMode === 'express') {
-        const apiKey = readSecret(request.user.directories, SECRET_KEYS.VERTEXAI);
+        const apiKey = await readSecret(request.user.directories, SECRET_KEYS.VERTEXAI);
         if (apiKey) {
             return {
                 authHeader: `Bearer ${apiKey}`,
@@ -56,7 +56,7 @@ export async function getVertexAIAuth(request) {
         throw new Error('API key is required for Vertex AI Express mode');
     } else if (authMode === 'full') {
         // Get service account JSON from backend storage
-        const serviceAccountJson = readSecret(request.user.directories, SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT);
+        const serviceAccountJson = await readSecret(request.user.directories, SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT);
 
         if (serviceAccountJson) {
             try {
@@ -185,7 +185,7 @@ export async function getGoogleApiConfig(request, model, endpoint = 'generateCon
         } else if (authType === 'full') {
             // Full mode: use project-specific URL with Authorization header
             // Get project ID from Service Account JSON
-            const serviceAccountJson = readSecret(request.user.directories, SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT);
+            const serviceAccountJson = await readSecret(request.user.directories, SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT);
             if (!serviceAccountJson) {
                 throw new Error('Vertex AI Service Account JSON is missing.');
             }
@@ -210,7 +210,7 @@ export async function getGoogleApiConfig(request, model, endpoint = 'generateCon
         }
     } else {
         // Google AI Studio
-        const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MAKERSUITE);
+        const apiKey = request.body.reverse_proxy ? request.body.proxy_password : await readSecret(request.user.directories, SECRET_KEYS.MAKERSUITE);
         const apiUrl = trimTrailingSlash(request.body.reverse_proxy || API_MAKERSUITE);
         const apiVersion = getConfigValue('gemini.apiVersion', 'v1beta');
         url = `${apiUrl}/${apiVersion}/models/${model}:${endpoint}?key=${apiKey}`;
@@ -221,7 +221,7 @@ export async function getGoogleApiConfig(request, model, endpoint = 'generateCon
 
 export const router = express.Router();
 
-router.post('/caption-image', async (request, response) => {
+router.post('/caption-image', asyncHandler(async (request, response) => {
     try {
         const mimeType = request.body.image.split(';')[0].split(':')[1];
         const base64Data = request.body.image.split(',')[1];
@@ -276,13 +276,13 @@ router.post('/caption-image', async (request, response) => {
         console.error(error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
-router.post('/list-voices', (_, response) => {
+router.post('/list-voices', asyncHandler(async (_, response) => {
     return response.json(languages);
-});
+}));
 
-router.post('/generate-voice', async (request, response) => {
+router.post('/generate-voice', asyncHandler(async (request, response) => {
     try {
         const text = request.body.text;
         const voice = request.body.voice ?? 'en';
@@ -298,9 +298,9 @@ router.post('/generate-voice', async (request, response) => {
         console.error('Google Translate TTS generation failed', error);
         response.status(500).send('Internal server error');
     }
-});
+}));
 
-router.post('/list-native-voices', async (_, response) => {
+router.post('/list-native-voices', asyncHandler(async (_, response) => {
     try {
         // Hardcoded Gemini native TTS voices from official documentation
         // Source: https://ai.google.dev/gemini-api/docs/speech-generation#voices
@@ -341,9 +341,9 @@ router.post('/list-native-voices', async (_, response) => {
         console.error('Failed to return Google TTS voices:', error);
         response.sendStatus(500);
     }
-});
+}));
 
-router.post('/generate-native-tts', async (request, response) => {
+router.post('/generate-native-tts', asyncHandler(async (request, response) => {
     try {
         const { text, voice, model } = request.body;
         const { url, headers, apiName } = await getGoogleApiConfig(request, model);
@@ -417,9 +417,9 @@ router.post('/generate-native-tts', async (request, response) => {
         }
         return response.end();
     }
-});
+}));
 
-router.post('/generate-image', async (request, response) => {
+router.post('/generate-image', asyncHandler(async (request, response) => {
     try {
         const model = request.body.model || 'imagen-3.0-generate-002';
         const { url, headers, apiName } = await getGoogleApiConfig(request, model, 'predict');
@@ -481,4 +481,4 @@ router.post('/generate-image', async (request, response) => {
         }
         return response.end();
     }
-});
+}));

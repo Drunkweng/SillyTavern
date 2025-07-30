@@ -6,9 +6,9 @@ import mime from 'mime-types';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 import { Jimp, JimpMime } from '../jimp.js';
-import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import writeFileAtomic from 'write-file-atomic';
 
-import { getConfigValue } from '../util.js';
+import { getConfigValue, asyncHandler } from '../util.js';
 
 const thumbnailsEnabled = !!getConfigValue('thumbnails.enabled', true, 'boolean');
 const quality = Math.min(100, Math.max(1, parseInt(getConfigValue('thumbnails.quality', 95, 'number'))));
@@ -79,14 +79,18 @@ function getOriginalFolder(directories, type) {
  * @param {ThumbnailType} type Type of the thumbnail
  * @param {string} file Name of the file
  */
-export function invalidateThumbnail(directories, type, file) {
+export async function invalidateThumbnail(directories, type, file) {
     const folder = getThumbnailFolder(directories, type);
     if (folder === undefined) throw new Error('Invalid thumbnail type');
 
     const pathToThumbnail = path.join(folder, sanitize(file));
 
-    if (fs.existsSync(pathToThumbnail)) {
-        fs.unlinkSync(pathToThumbnail);
+    try {
+        await fsPromises.unlink(pathToThumbnail);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
     }
 }
 
@@ -104,15 +108,19 @@ async function generateThumbnail(directories, type, file) {
     const pathToCachedFile = path.join(thumbnailFolder, file);
     const pathToOriginalFile = path.join(originalFolder, file);
 
-    const cachedFileExists = fs.existsSync(pathToCachedFile);
-    const originalFileExists = fs.existsSync(pathToOriginalFile);
+    const [cachedFileExists, originalFileExists] = await Promise.all([
+        fsPromises.access(pathToCachedFile).then(() => true).catch(() => false),
+        fsPromises.access(pathToOriginalFile).then(() => true).catch(() => false),
+    ]);
 
     // to handle cases when original image was updated after thumb creation
     let shouldRegenerate = false;
 
     if (cachedFileExists && originalFileExists) {
-        const originalStat = fs.statSync(pathToOriginalFile);
-        const cachedStat = fs.statSync(pathToCachedFile);
+        const [originalStat, cachedStat] = await Promise.all([
+            fsPromises.stat(pathToOriginalFile),
+            fsPromises.stat(pathToCachedFile),
+        ]);
 
         if (originalStat.mtimeMs > cachedStat.ctimeMs) {
             //console.warn('Original file changed. Regenerating thumbnail...');
@@ -143,10 +151,10 @@ async function generateThumbnail(directories, type, file) {
         }
         catch (inner) {
             console.warn(`Thumbnailer can not process the image: ${pathToOriginalFile}. Using original size`, inner);
-            buffer = fs.readFileSync(pathToOriginalFile);
+            buffer = await fsPromises.readFile(pathToOriginalFile);
         }
 
-        writeFileAtomicSync(pathToCachedFile, buffer);
+        await writeFileAtomic(pathToCachedFile, buffer);
     }
     catch (outer) {
         return null;
@@ -162,7 +170,7 @@ async function generateThumbnail(directories, type, file) {
  */
 export async function ensureThumbnailCache(directoriesList) {
     for (const directories of directoriesList) {
-        const cacheFiles = fs.readdirSync(directories.thumbnailsBg);
+        const cacheFiles = await fsPromises.readdir(directories.thumbnailsBg);
 
         // files exist, all ok
         if (cacheFiles.length) {
@@ -171,7 +179,7 @@ export async function ensureThumbnailCache(directoriesList) {
 
         console.info('Generating thumbnails cache. Please wait...');
 
-        const bgFiles = fs.readdirSync(directories.backgrounds);
+        const bgFiles = await fsPromises.readdir(directories.backgrounds);
         const tasks = [];
 
         for (const file of bgFiles) {
@@ -186,61 +194,60 @@ export async function ensureThumbnailCache(directoriesList) {
 export const router = express.Router();
 
 // Important: This route must be mounted as '/thumbnail'. It is used in the client code and saved to chat files.
-router.get('/', async function (request, response) {
-    try{
-        if (typeof request.query.file !== 'string' || typeof request.query.type !== 'string') {
-            return response.sendStatus(400);
-        }
-
-        const type = request.query.type;
-        const file = sanitize(request.query.file);
-
-        if (!type || !file) {
-            return response.sendStatus(400);
-        }
-
-        if (!(type === 'bg' || type === 'avatar' || type === 'persona')) {
-            return response.sendStatus(400);
-        }
-
-        if (sanitize(file) !== file) {
-            console.error('Malicious filename prevented');
-            return response.sendStatus(403);
-        }
-
-        if (!thumbnailsEnabled) {
-            const folder = getOriginalFolder(request.user.directories, type);
-
-            if (folder === undefined) {
-                return response.sendStatus(400);
-            }
-
-            const pathToOriginalFile = path.join(folder, file);
-            if (!fs.existsSync(pathToOriginalFile)) {
-                return response.sendStatus(404);
-            }
-            const contentType = mime.lookup(pathToOriginalFile) || 'image/png';
-            const originalFile = await fsPromises.readFile(pathToOriginalFile);
-            response.setHeader('Content-Type', contentType);
-            return response.send(originalFile);
-        }
-
-        const pathToCachedFile = await generateThumbnail(request.user.directories, type, file);
-
-        if (!pathToCachedFile) {
-            return response.sendStatus(404);
-        }
-
-        if (!fs.existsSync(pathToCachedFile)) {
-            return response.sendStatus(404);
-        }
-
-        const contentType = mime.lookup(pathToCachedFile) || 'image/jpeg';
-        const cachedFile = await fsPromises.readFile(pathToCachedFile);
-        response.setHeader('Content-Type', contentType);
-        return response.send(cachedFile);
-    } catch (error) {
-        console.error('Failed getting thumbnail', error);
-        return response.sendStatus(500);
+router.get('/', asyncHandler(async function (request, response) {
+    if (typeof request.query.file !== 'string' || typeof request.query.type !== 'string') {
+        return response.sendStatus(400);
     }
-});
+
+    const type = request.query.type;
+    const file = sanitize(request.query.file);
+
+    if (!type || !file) {
+        return response.sendStatus(400);
+    }
+
+    if (!(type === 'bg' || type === 'avatar' || type === 'persona')) {
+        return response.sendStatus(400);
+    }
+
+    if (sanitize(file) !== file) {
+        console.error('Malicious filename prevented');
+        return response.sendStatus(403);
+    }
+
+    if (!thumbnailsEnabled) {
+        const folder = getOriginalFolder(request.user.directories, type);
+
+        if (folder === undefined) {
+            return response.sendStatus(400);
+        }
+
+        const pathToOriginalFile = path.join(folder, file);
+        try {
+            await fsPromises.access(pathToOriginalFile);
+        } catch {
+            return response.sendStatus(404);
+        }
+        const contentType = mime.lookup(pathToOriginalFile) || 'image/png';
+        const originalFile = await fsPromises.readFile(pathToOriginalFile);
+        response.setHeader('Content-Type', contentType);
+        return response.send(originalFile);
+    }
+
+    const pathToCachedFile = await generateThumbnail(request.user.directories, type, file);
+
+    if (!pathToCachedFile) {
+        return response.sendStatus(404);
+    }
+
+    try {
+        await fsPromises.access(pathToCachedFile);
+    } catch {
+        return response.sendStatus(404);
+    }
+
+    const contentType = mime.lookup(pathToCachedFile) || 'image/jpeg';
+    const cachedFile = await fsPromises.readFile(pathToCachedFile);
+    response.setHeader('Content-Type', contentType);
+    return response.send(cachedFile);
+}));
