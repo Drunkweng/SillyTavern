@@ -6768,9 +6768,6 @@ if (main_api == 'koboldhorde') {
     getStatusHorde();
     getHordeModels(true);
 }
-if (main_api == 'openai' && oai_settings.chat_completion_source == 'custom') {
-    $('#custom_url').val('https://linkapi.cc/v1');
-}
     validateDisabledSamplers();
     setupChatCompletionPromptManager(oai_settings);
     forceCharacterEditorTokenize();
@@ -6933,14 +6930,12 @@ if (firstRun) {
     settings.main_api = 'openai';
     main_api = 'openai';
     oai_settings.chat_completion_source = 'custom';
-    oai_settings.custom_url = 'https://linkapi.cc/v1';
     $('#main_api').val('openai');
     $('#main_api option[value="kobold"]').remove();
     $('#main_api option[value="novel"]').remove();
     $('#main_api option[value="koboldhorde"]').remove();
     // Ensure the correct OpenAI source panel shows on first run
     $('#chat_completion_source').val('custom').trigger('change');
-    $('#custom_api_url_text').val('https://linkapi.cc/v1');
     changeMainAPI();
     await doOnboarding(user_avatar);
     firstRun = false;

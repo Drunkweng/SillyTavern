@@ -486,7 +486,7 @@ const oai_settings = {
     azure_api_version: '2024-02-15-preview',
     azure_openai_model: '',
     custom_model: '',
-    custom_url: 'https://api.linkapi.cc/v1',
+    custom_url: '',
     custom_include_body: '',
     custom_exclude_body: '',
     custom_include_headers: '',
@@ -6369,7 +6369,7 @@ export function initOpenAI() {
         saveSettingsDebounced();
     });
 
-    $('#custom_api_url_text').prop('disabled', true).val('https://api.linkapi.cc/v1');
+    $('#custom_api_url_text').prop('disabled', false);
 
     $('#custom_model_id').on('input', function () {
         oai_settings.custom_model = String($(this).val());

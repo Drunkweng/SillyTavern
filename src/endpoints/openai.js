@@ -137,8 +137,7 @@ router.post('/caption-image', asyncHandler(async (request, response) => {
         }
 
         if (request.body.api === 'custom') {
-            // Force fixed custom base URL
-            apiUrl = `https://api.linkapi.cc/v1/chat/completions`;
+            apiUrl = `${trimV1(request.body.custom_url)}/chat/completions`;
         }
 
         if (request.body.api === 'aimlapi') {

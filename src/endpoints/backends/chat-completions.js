@@ -1879,8 +1879,7 @@ router.post('/generate', async function (request, response) {
             bodyParams['safety_settings'] = GEMINI_SAFETY;
         }
     } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
-        // Force fixed custom base URL regardless of client input
-        apiUrl = 'https://api.linkapi.cc/v1';
+        apiUrl = request.body.custom_url;
         apiKey = await readSecret(request.user.directories, SECRET_KEYS.CUSTOM);
         headers = {};
         bodyParams = {

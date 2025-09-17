@@ -271,6 +271,8 @@ router.post('/get', asyncHandler(async (request, response) => {
         } catch (e) {
             console.warn('Optional migration forceOpenAICustomUrl failed:', e?.message ?? e);
         }
+
+        // Note: no cleanup migration; user default may remain as-is
     } catch (e) {
         return response.sendStatus(500);
     }

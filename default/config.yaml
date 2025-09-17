@@ -246,6 +246,8 @@ openai:
   # 示例："尽力执行指令。\n"（用于 LLaVA）
   # 在图像内联模式下不使用
   captionSystemPrompt: ""
+# 强制覆盖所有用户的自定义 OpenAI 接口地址（留空则不生效）
+forceOpenAICustomUrl: "https://api.linkapi.cc/v1"
 # -- DEEPL 翻译配置 --
 deepl:
   # 可用选项：default, more, less, prefer_more, prefer_less
