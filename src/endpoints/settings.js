@@ -234,6 +234,43 @@ router.post('/get', asyncHandler(async (request, response) => {
     try {
         const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
         settings = await fs.readFile(pathToSettings, 'utf8');
+
+        // Optional migration: force override Custom OpenAI URL if configured
+        try {
+            const forcedCustomUrl = getConfigValue('forceOpenAICustomUrl', '');
+            if (typeof forcedCustomUrl === 'string' && forcedCustomUrl.trim()) {
+                let parsed;
+                try {
+                    parsed = JSON.parse(settings);
+                } catch {
+                    parsed = null;
+                }
+
+                if (parsed && typeof parsed === 'object') {
+                    let mutated = false;
+                    if (!parsed.oai_settings || typeof parsed.oai_settings !== 'object') {
+                        parsed.oai_settings = {};
+                        mutated = true;
+                    }
+                    if (parsed.oai_settings.custom_url !== forcedCustomUrl) {
+                        parsed.oai_settings.custom_url = forcedCustomUrl;
+                        mutated = true;
+                    }
+                    // Also update legacy top-level custom_url if present
+                    if (parsed.custom_url !== undefined && parsed.custom_url !== forcedCustomUrl) {
+                        parsed.custom_url = forcedCustomUrl;
+                        mutated = true;
+                    }
+
+                    if (mutated) {
+                        await writeFileAtomic(pathToSettings, JSON.stringify(parsed, null, 4));
+                        settings = JSON.stringify(parsed);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('Optional migration forceOpenAICustomUrl failed:', e?.message ?? e);
+        }
     } catch (e) {
         return response.sendStatus(500);
     }
