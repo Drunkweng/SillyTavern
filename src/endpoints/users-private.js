@@ -8,7 +8,7 @@ import express from 'express';
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey } from '../users.js';
 import { SETTINGS_FILE } from '../constants.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
-import { color, Cache, asyncHandler } from '../util.js';
+import { color, Cache, asyncHandler, getConfigValue } from '../util.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
 

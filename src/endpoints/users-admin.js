@@ -151,7 +151,7 @@ router.post('/create', requireAdminMiddleware, asyncHandler(async (request, resp
     }
 
     const salt = getPasswordSalt();
-    const password = request.body.password ? getPasswordHash(request.body.password, salt) : '';
+    const password = request.body.password ? await getPasswordHash(request.body.password, salt) : '';
 
     const newUser = {
         handle: handle,
