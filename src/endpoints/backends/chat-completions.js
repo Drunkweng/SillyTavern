@@ -53,6 +53,7 @@ import {
     getWebTokenizer,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
+import { isBackpressureEnabled } from '../../server-main.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -1409,6 +1410,40 @@ async function sendAzureOpenAIRequest(request, response) {
 
 export const router = express.Router();
 
+// Global concurrency limiter with simple queue
+const MAX_CONCURRENCY = 8;
+const MAX_QUEUE = 24;
+let inFlight = 0;
+const queue = [];
+
+async function withConcurrency(fn, res) {
+    return new Promise((resolve) => {
+        const task = async () => {
+            inFlight++;
+            try {
+                const result = await fn();
+                resolve(result);
+            } finally {
+                inFlight--;
+                const next = queue.shift();
+                if (next) next();
+            }
+        };
+
+        if (inFlight < MAX_CONCURRENCY) {
+            void task();
+        } else if (queue.length < MAX_QUEUE && !isBackpressureEnabled()) {
+            queue.push(() => void task());
+        } else {
+            if (res && !res.headersSent) {
+                res.setHeader('Retry-After', '2');
+                res.status(503).send({ error: true, message: 'Server busy. Please retry shortly.' });
+            }
+            resolve(undefined);
+        }
+    });
+}
+
 router.post('/status', async function (request, statusResponse) {
     if (!request.body) return statusResponse.sendStatus(400);
 
@@ -1765,7 +1800,8 @@ router.post('/bias', async function (request, response) {
 
 
 router.post('/generate', async function (request, response) {
-    if (!request.body) return response.status(400).send({ error: true });
+    const execGenerate = async () => {
+        if (!request.body) return response.status(400).send({ error: true });
 
     const postProcessingType = request.body.custom_prompt_post_processing;
     if (Array.isArray(request.body.messages) && postProcessingType) {
@@ -2083,7 +2119,7 @@ router.post('/generate', async function (request, response) {
 
     console.debug('Chat Completion request:', requestBody);
 
-    makeRequest(config, response, request);
+    await makeRequest(config, response, request);
 
     /**
      * Makes a fetch request to the OpenAI API endpoint.
@@ -2144,6 +2180,8 @@ router.post('/generate', async function (request, response) {
             response.end();
         }
     }
+    };
+    await withConcurrency(execGenerate, response);
 });
 
 const multimodalModels = express.Router();

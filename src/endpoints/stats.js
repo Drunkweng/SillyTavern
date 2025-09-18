@@ -155,6 +155,7 @@ export async function recreateStats(handle, chatsPath, charactersPath) {
  * Loads the stats file into memory. If the file doesn't exist or is invalid,
  * initializes stats by collecting and creating them for each character.
  */
+let SAVE_INTERVAL_HANDLE = null;
 export async function init() {
     try {
         const userHandles = await getAllUserHandles();
@@ -177,7 +178,7 @@ export async function init() {
         console.error('Failed to initialize stats:', err);
     }
     // Save stats every 5 minutes
-    setInterval(saveStatsToFile, 5 * 60 * 1000);
+    SAVE_INTERVAL_HANDLE = setInterval(saveStatsToFile, 5 * 60 * 1000);
 }
 /**
  * Saves the current state of charStats to a file, only if the data has changed since the last save.
@@ -209,6 +210,10 @@ async function saveStatsToFile() {
  */
 export async function onExit() {
     try {
+        if (SAVE_INTERVAL_HANDLE) {
+            clearInterval(SAVE_INTERVAL_HANDLE);
+            SAVE_INTERVAL_HANDLE = null;
+        }
         await saveStatsToFile();
     } catch (err) {
         console.error('Failed to write stats to file:', err);

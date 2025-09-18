@@ -68,8 +68,50 @@ import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
+import { disposeTokenizers } from './endpoints/tokenizers.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 
+// Simple memory watchdog
+let WATCHDOG_HANDLE = null;
+let BACKPRESSURE_ENABLED = false;
+function startMemoryWatchdog() {
+    // Soft/hard thresholds in bytes (~12GB / ~14.5GB); hard still below 16GB cap
+    const SOFT = 12 * 1024 * 1024 * 1024;
+    const HARD = 14.5 * 1024 * 1024 * 1024;
+    const INTERVAL = 30000; // 30s
+    function sample() {
+        try {
+            const mu = process.memoryUsage();
+            const rss = mu.rss || 0;
+            if (rss > SOFT && !BACKPRESSURE_ENABLED) {
+                BACKPRESSURE_ENABLED = true;
+                console.warn('Memory watchdog: enabling backpressure, rss=', Math.round(rss/1024/1024), 'MB');
+            }
+            if (rss < SOFT * 0.8 && BACKPRESSURE_ENABLED) {
+                BACKPRESSURE_ENABLED = false;
+                console.info('Memory watchdog: disabling backpressure, rss=', Math.round(rss/1024/1024), 'MB');
+            }
+            if (rss > HARD) {
+                // Try to free memory via caches
+                try { disposeTokenizers(); } catch {}
+                try { diskCache.dispose(); } catch {}
+                console.warn('Memory watchdog: hard threshold reached, attempted cache disposal');
+            }
+        } catch (e) {
+            console.warn('Memory watchdog sample error:', e?.message || e);
+        }
+    }
+    WATCHDOG_HANDLE = setInterval(sample, INTERVAL);
+}
+function stopMemoryWatchdog() {
+    if (WATCHDOG_HANDLE) {
+        clearInterval(WATCHDOG_HANDLE);
+        WATCHDOG_HANDLE = null;
+    }
+}
+export function isBackpressureEnabled() {
+    return BACKPRESSURE_ENABLED;
+}
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -280,6 +322,7 @@ async function preSetupTasks() {
 
     await settingsInit();
     await statsInit();
+    startMemoryWatchdog();
 
     const pluginsDirectory = path.join(serverDirectory, 'plugins');
     const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
@@ -294,6 +337,8 @@ async function preSetupTasks() {
             await cleanupPlugins();
         }
         diskCache.dispose();
+        disposeTokenizers();
+        stopMemoryWatchdog();
         setWindowTitle(consoleTitle);
         process.exit();
     };

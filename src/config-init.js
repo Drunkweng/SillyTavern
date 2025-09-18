@@ -124,6 +124,12 @@ const keyMigrationMap = [
         migrate: () => void 0,
         remove: true,
     },
+    // Migrate nested OpenAI force URL to the new top-level key
+    {
+        oldKey: 'openai.forceOpenAICustomUrl',
+        newKey: 'forceOpenAICustomUrl',
+        migrate: (value) => value,
+    },
 ];
 
 /**
@@ -246,5 +252,11 @@ export async function addMissingConfigValues(configPath) {
 export async function initConfig(configPath) {
     console.log('Using config path:', color.green(configPath));
     setConfigFilePath(configPath);
+    const skipMigrationEnv = String(process.env.SILLYTAVERN_SKIP_CONFIG_MIGRATION ?? '').trim().toLowerCase();
+    const shouldSkipMigration = skipMigrationEnv === '1' || skipMigrationEnv === 'true' || skipMigrationEnv === 'yes';
+    if (shouldSkipMigration) {
+        console.log(color.yellow('Skipping config migration: SILLYTAVERN_SKIP_CONFIG_MIGRATION is set.'));
+        return;
+    }
     await addMissingConfigValues(configPath);
 }

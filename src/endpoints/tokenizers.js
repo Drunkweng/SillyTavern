@@ -27,6 +27,20 @@ import { getConfigValue, isValidUrl, asyncHandler } from '../util.js';
 const tokenizersCache = {};
 
 /**
+ * Clears in-memory tokenizer caches to help prevent memory growth on long-running processes.
+ */
+export function disposeTokenizers() {
+    try {
+        for (const key of Object.keys(tokenizersCache)) {
+            // tiktoken instances don't expose a public dispose; just drop references
+            delete tokenizersCache[key];
+        }
+    } catch (err) {
+        console.warn('Failed to dispose tokenizers cache:', err);
+    }
+}
+
+/**
  * @type {string[]}
  */
 export const TEXT_COMPLETION_MODELS = [
